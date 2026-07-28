@@ -12,7 +12,8 @@ because the k.p valence structure plus the Bir-Pikus shear terms already make [1
 inequivalent in zincblende. References as in piezo_states.py.
 """
 import sys, time
-sys.path.insert(0, r'C:\Users\molly\code\qd3Dsolver')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import qdsolver_core as qd
 import strain_fourier as sf

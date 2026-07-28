@@ -14,7 +14,8 @@ The grid is built with qdsolver_core.centered_axis and its mirror symmetry ASSER
 solve, because an asymmetric grid manufactures exactly the splitting being measured.
 """
 import sys, time
-sys.path.insert(0, r'C:\Users\molly\code\qd3Dsolver')
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import qdsolver_core as qd
 import strain_fourier as sf

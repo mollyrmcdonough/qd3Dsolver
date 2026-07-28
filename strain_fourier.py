@@ -31,11 +31,18 @@ Assumptions, and how they differ from the model this replaces
 KEPT, and this is the point: all six strain components, with cubic elastic anisotropy.
 
 STILL APPROXIMATE:
-  * Homogeneous elastic constants. Constant C_ijkl is what makes the Fourier solve exact and
-    O(N log N); the real dot and matrix differ (InAs is ~30% softer than GaAs). `elastic_choice`
-    selects which set to use. A numerically minimized FD/FEM elasticity solve would be needed to
-    handle the inhomogeneity properly -- that is the standard alternative, e.g. what Pryor's own
-    conjugate-gradient relaxation did in Phys. Rev. B 57, 7190 (1998).
+  * Homogeneous elastic constants -- SUPERSEDED for quantitative work by elasticity_fd.
+    Constant C_ijkl is what makes the Fourier solve exact and O(N log N), but the real dot and
+    matrix differ (InAs is ~25% softer than GaAs in bulk modulus), and the caller must pass one
+    set for both. This is not a small effect and it is not bracketed by the two choices: for a
+    misfitting inclusion the dilatation depends on the INCLUSION's bulk modulus and the MATRIX's
+    shear modulus, so the true value lies outside the interval any single choice can reach
+    (measured: homogeneous [-0.0841, -0.0927] vs true -0.1068, worth ~15% in the band-edge
+    shift; see cb_depth_diagnostic.py). Use elasticity_fd.solve_strain_fd, which minimizes the
+    strain energy in real space and carries position-dependent constants -- that is Pryor's own
+    method in Phys. Rev. B 57, 7190 (1998). This module remains the right choice when the
+    constants really are uniform, as an independent check on the FD solver (they agree in that
+    limit), and for speed.
   * Linear elasticity. At ~7% mismatch this is being pushed; nonlinear corrections exist in the
     literature but linear is still what most production k.p work uses.
   * Continuum, so the result carries the C4v symmetry of the pyramid rather than the true C2v
@@ -48,14 +55,14 @@ STILL APPROXIMATE:
     padding is large enough that the strain has decayed at the box faces. `padding_report`
     measures that directly; it is not assumed.
 
-NOW UNBLOCKED, not yet implemented: piezoelectricity. The shear components drive a polarization
-P_i = 2 e14 eps_jk (i,j,k cyclic) in zincblende, whose bound charge -div P can be fed straight
-into poisson_solver.solve_poisson. This was simply not computable under the hydrostatic-only
-model -- there was no shear to feed it -- and it is the term that breaks the p-state degeneracy
-of a C4v pyramid. Pryor's Table I carries e14 for both materials, so he includes it and this
-code does not. Note also that first-order piezoelectricity alone is now known to be an
-unreliable approximation in these dots: the second-order response is comparable in magnitude
-and often opposes it (Bester and Zunger and co-workers, c. 2006).
+UNBLOCKED BY THE SHEAR COMPONENTS, and now implemented in piezoelectric.py: the shear drives a
+polarization P_i = 2 e14 eps_jk (i,j,k cyclic) in zincblende, whose bound charge -div P sources
+an electrostatic potential. This was simply not computable under the hydrostatic-only model --
+there was no shear to feed it. Note that it is NOT the only term that lowers the symmetry of a
+C4v pyramid: the multiband p-doublet splitting was measured here to be nonzero (3.0 meV at four
+bands, 9.4 meV at six) with the piezoelectric potential switched off, because the Bir-Pikus
+shear terms already couple the bands anisotropically. See piezoelectric.py for what first-order
+piezoelectricity does and does not capture.
 
 Sign convention
 ---------------
@@ -84,6 +91,12 @@ class StrainTensor:
 
     __slots__ = ('exx', 'eyy', 'ezz', 'exy', 'eyz', 'ezx')
 
+    # Iterate over THIS, never over __slots__: a subclass that adds slots of its own (as
+    # elasticity_fd.FDStrainTensor does, to carry solver convergence data) shadows __slots__
+    # with only its own names, and every component-wise method would then silently operate on
+    # the wrong attributes.
+    COMPONENTS = ('exx', 'eyy', 'ezz', 'exy', 'eyz', 'ezx')
+
     def __init__(self, exx, eyy, ezz, exy, eyz, ezx):
         self.exx, self.eyy, self.ezz = exx, eyy, ezz
         self.exy, self.eyz, self.ezx = exy, eyz, ezx
@@ -102,7 +115,7 @@ class StrainTensor:
         return self.exx.shape
 
     def as_dict(self):
-        return {k: getattr(self, k) for k in self.__slots__}
+        return {k: getattr(self, k) for k in self.COMPONENTS}
 
     def at(self, mask):
         """Mean of each component over a boolean mask -- the usual way to quote 'the strain in
@@ -113,12 +126,13 @@ class StrainTensor:
         large the local shear is; a mean-based shear diagnostic reports zero and looks like a
         solver bug.
         """
-        return {k: float(getattr(self, k)[mask].mean()) for k in self.__slots__}
+        return {k: float(getattr(self, k)[mask].mean()) for k in self.COMPONENTS}
 
     def at_rms(self, mask):
         """Root-mean-square of each component over a boolean mask. The meaningful magnitude for
         the shear components, which average to zero by symmetry."""
-        return {k: float(np.sqrt((getattr(self, k)[mask] ** 2).mean())) for k in self.__slots__}
+        return {k: float(np.sqrt((getattr(self, k)[mask] ** 2).mean()))
+                for k in self.COMPONENTS}
 
     def __repr__(self):
         return (f"StrainTensor(shape={self.shape}, "

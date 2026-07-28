@@ -1,5 +1,8 @@
 """Generate pryor_fig2.ipynb. Run, then execute the notebook with nbconvert."""
+import os
 import nbformat as nbf
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 nb = nbf.v4.new_notebook()
 c = []
@@ -94,7 +97,7 @@ Everything below goes through one helper. Two independent checks come for free:
 
 co("""def bands_on(index):
     \"\"\"Local k=0 band energies along a 1D cut through the grid.\"\"\"
-    sub = sf.StrainTensor(*[getattr(strain, k)[index] for k in sf.StrainTensor.__slots__])
+    sub = sf.StrainTensor(*[getattr(strain, k)[index] for k in sf.StrainTensor.COMPONENTS])
     m = pyr[index]
     pick = lambda key: np.where(m, dot[key], matrix[key])
     Ev = np.where(m, dot['E_vbo'], matrix['E_vbo'])
@@ -105,7 +108,7 @@ cut001 = (i0, i0, slice(None))
 b001 = bands_on(cut001)
 
 Ve_f, Vh_f, _, _ = pr.band_edge_fields(pyr, strain.trace)
-sub = sf.StrainTensor(*[getattr(strain, k)[cut001] for k in sf.StrainTensor.__slots__])
+sub = sf.StrainTensor(*[getattr(strain, k)[cut001] for k in sf.StrainTensor.COMPONENTS])
 pre = kp.local_band_edges(sub, Ev=Vh_f[cut001], Ec=Ve_f[cut001],
                           delta_so=np.where(pyr[cut001], dot['delta_so'], matrix['delta_so']),
                           a_c=0.0, a_v=0.0,
@@ -262,11 +265,30 @@ whereas Pryor relaxes with each material's own via conjugate gradient. InAs is ~
 GaAs, so the two choices should bracket him.
 
 They do not — checked below rather than assumed. Both choices give a well *deeper* than his, and
-using the softer InAs constants makes the discrepancy worse, not better. So this is not a
-stiffness-choice effect that a better single choice would fix; capturing it needs the genuinely
-inhomogeneous relaxation. Everything else in this notebook agrees with him, including the sign,
-shape and ordering of every feature, so the residual is a known, bounded approximation rather
-than an unexplained discrepancy.
+using the softer InAs constants makes the discrepancy *worse*.
+
+`cb_depth_diagnostic.py` explains why, and the explanation is worth stating because it makes the
+bracket test look wrong-headed in hindsight. For a misfitting sphere the elastic dilatation is
+
+$$\mathrm{Tr}\,\varepsilon = -3\,\varepsilon_T\,\frac{4\mu_m}{3K_i + 4\mu_m}$$
+
+— the **inclusion's** bulk modulus and the **matrix's** shear modulus, and nothing else. A
+homogeneous solve must take both from one material, so it cannot reach the true value for *any*
+choice: the homogeneous bracket is $[-0.0841, -0.0927]$ while the true inhomogeneous value is
+$-0.1068$, outside it. What matters is the dot/matrix stiffness *contrast*
+($K_\mathrm{InAs}/K_\mathrm{GaAs} = 0.75$ — soft dot in a stiff matrix conforms to the matrix
+more, so it is compressed more), and swapping a single global constant set does not probe
+contrast at all. It varies overall stiffness, which barely matters, since only ratios enter a
+homogeneous eigenstrain problem.
+
+Quantitatively the correction is $1.153\times$ more compression, while Pryor's two numbers imply
+$1.09$–$1.12\times$ relative to ours — so the contrast accounts for the whole discrepancy, with
+margin. Clamping is ~100× too small, and the piezoelectric potential is identically zero along
+$[001]$, where both of his quoted numbers lie. Everything else here agrees with him, including
+the sign, shape and ordering of every feature.
+
+Fixing it properly means an FD/FEM elasticity solve with position-dependent $C_{ijkl}$ — the
+limitation already flagged in `strain_fourier`'s docstring, now quantified.
 
 Also not included here, deliberately: the piezoelectric potential. Pryor notes it is added to
 the full Hamiltonian, but Fig. 2 is defined as the $k=0$ eigenvalues of $H_s$, so it does not
@@ -277,7 +299,7 @@ along it.)""")
 co("""for label in ('GaAs', 'InAs'):
     m = pr.PRYOR_TABLE_I[label]
     s2 = sf.solve_strain(pyr, eps_star, m['C11'], m['C12'], m['C44'], H)
-    sub2 = sf.StrainTensor(*[getattr(s2, k)[cut001] for k in sf.StrainTensor.__slots__])
+    sub2 = sf.StrainTensor(*[getattr(s2, k)[cut001] for k in sf.StrainTensor.COMPONENTS])
     pick = lambda key: np.where(in001, dot[key], matrix[key])
     Ev = np.where(in001, dot['E_vbo'], matrix['E_vbo'])
     bb = kp.local_band_edges(sub2, Ev=Ev, Ec=Ev + pick('Eg'), delta_so=pick('delta_so'),
@@ -291,5 +313,5 @@ print(f"{'Pryor:':<12} inhomogeneous relaxation      "
 
 nb['cells'] = c
 nb.metadata.kernelspec = dict(display_name='Python 3', language='python', name='python3')
-nbf.write(nb, 'pryor_fig2.ipynb')
+nbf.write(nb, os.path.join(ROOT, 'pryor_fig2.ipynb'))
 print(f"wrote pryor_fig2.ipynb with {len(c)} cells")

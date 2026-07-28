@@ -37,7 +37,7 @@ Run: python pryor_fig2.py
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -72,7 +72,7 @@ def build():
 
 def bands(strain, inside, index):
     """Local k=0 band energies along a 1D cut, on Pryor's energy zero (unstrained GaAs E_v)."""
-    sub = sf.StrainTensor(*[getattr(strain, k)[index] for k in sf.StrainTensor.__slots__])
+    sub = sf.StrainTensor(*[getattr(strain, k)[index] for k in sf.StrainTensor.COMPONENTS])
     m = inside[index]
 
     def pick(key):
@@ -97,7 +97,7 @@ def main():
     cut = (i0, i0, slice(None))
     b_a = bands(strain, pyr, cut)
     Ve_field, Vh_field, _, _ = pr.band_edge_fields(pyr, strain.trace)
-    sub = sf.StrainTensor(*[getattr(strain, k)[cut] for k in sf.StrainTensor.__slots__])
+    sub = sf.StrainTensor(*[getattr(strain, k)[cut] for k in sf.StrainTensor.COMPONENTS])
     b_pre = kp.local_band_edges(
         sub, Ev=Vh_field[cut], Ec=Ve_field[cut],
         delta_so=np.where(pyr[cut], dot['delta_so'], matrix['delta_so']),
@@ -126,7 +126,7 @@ def main():
           f"{'yes' if vin.min() < min(vin[0], vin[-1]) - 1e-3 else 'NO'}")
 
     ch = kp.local_band_character(
-        sf.StrainTensor(*[getattr(strain, k)[cut] for k in sf.StrainTensor.__slots__]),
+        sf.StrainTensor(*[getattr(strain, k)[cut] for k in sf.StrainTensor.COMPONENTS]),
         Ev=np.where(in_axis, dot['E_vbo'], matrix['E_vbo']),
         delta_so=np.where(in_axis, dot['delta_so'], matrix['delta_so']),
         a_v=np.where(in_axis, dot['a_v'], matrix['a_v']),
