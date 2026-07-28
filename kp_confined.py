@@ -159,7 +159,23 @@ class GridOperators:
 
 def build_confined_luttinger_kohn(ops, gamma1_field, gamma2_field, gamma3_field,
                                    delta_so_field, V_field):
-    """Assemble the confined 6x6-block sparse Hamiltonian (eV) from position-dependent
+    """SUPERSEDED AND KNOWN WRONG -- use kp_pryor.confined_hamiltonian instead.
+
+    This matrix fails two checks that the original bulk validation was not sensitive to:
+      1. It places the split-off band at -delta on the hole-convention diagonal instead of
+         +delta, which makes spurious split-off states the lowest eigenvalues (observed:
+         "bound" states ~300 meV below the potential floor).
+      2. Its off-diagonal R/S elements are in the wrong positions. In the spherical
+         approximation (gamma2 = gamma3) the valence bands must be exactly isotropic; this
+         matrix gives 21 meV of anisotropy at |k| = 0.3/nm, kp_pryor gives 1e-16 eV.
+    The earlier validation compared only [001] effective masses, where R and S vanish by
+    symmetry, and cross-checked the discretization against kp_luttinger.py -- which shares
+    both errors, so the agreement proved the discretization correct but not the matrix.
+
+    The DISCRETIZATION machinery in this module (GridOperators, diagonal_k2_operator,
+    cross_k2_operator, first_derivative_operator) is unaffected and is what kp_pryor builds on.
+
+    Assemble the confined 6x6-block sparse Hamiltonian (eV) from position-dependent
     Luttinger parameters, split-off energy, and a common (band-edge + strain) potential V_field
     added identically to every band -- valid as-is only when strain is purely hydrostatic (true
     for the spherical dot; a non-spherical shape's shear strain would need genuine Bir-Pikus

@@ -83,7 +83,26 @@ def voigt_poisson_ratio(C11, C12, C44):
 
 
 def trace_strain_from_mask(inside_mask, eps_star, nu):
-    """Tr(strain) field for an inclusion of ARBITRARY shape, under the same approximations
+    """SUPERSEDED -- returns the CONSTRAINED strain, which is not what deformation potentials act
+    on. Use strain_fourier.solve_strain instead.
+
+    Two independent problems, both fixed by strain_fourier:
+
+    1. WRONG BY A CONSTANT FACTOR. This returns 3*alpha*eps_star = (1+nu)/(1-nu) * eps_star, the
+       constrained (total) strain of the Eshelby inclusion. The deformation potentials a_c and
+       a_v act on the ELASTIC strain, total minus eigenstrain, which is
+       (alpha-1)*3*eps_star = 2(1-2nu)/(1-nu) * eps_star. The ratio (1+nu)/(2(1-2nu)) is 1.165 at
+       the GaAs Voigt nu = 0.235, so every band-edge shift computed from this is ~17% too large.
+       Verified analytically and numerically in strain_validation.py (TEST 3).
+    2. NO SHEAR. Only the trace exists here, so the Bir-Pikus b and d terms cannot be formed at
+       all. In the Pryor b = 14 nm pyramid the rms shear strain is ~13% of the trace, and Pryor's
+       Sec. VI attributes hole confinement mainly to shear.
+
+    Kept so the earlier sphere/lens/pyramid notebooks still run. Do not use for new work.
+
+    Original docstring follows.
+
+    Tr(strain) field for an inclusion of ARBITRARY shape, under the same approximations
     used throughout this project (homogeneous isotropic elasticity, purely dilatational
     eigenstrain eps_star).
 
@@ -117,6 +136,53 @@ def eshelby_sphere_trace_strain(inside_mask, eps_star, nu):
     the special case of trace_strain_from_mask (see that docstring for why the result is
     shape-independent)."""
     return trace_strain_from_mask(inside_mask, eps_star, nu)
+
+
+# --- Grid construction and geometry guards ---
+#
+# These exist because a silently malformed grid produced a real, hard-to-spot error here: a
+# pyramid mask built on `np.arange(-a, a+eps, h)` came out BOTH mirror-asymmetric and 14%
+# undersized, which showed up only much later as a spurious C4-antisymmetry violation in the
+# piezoelectric potential. Build every grid with `centered_axis` and assert the two checks
+# below before trusting any symmetry-sensitive result.
+
+def centered_axis(n, h):
+    """`n` coordinates of spacing `h`, exactly symmetric about zero.
+
+    `np.arange(-a, a + eps, h)` is NOT symmetric: it evaluates start + i*h in floating point,
+    so for an `h` with no exact binary representation the two ends differ by ~1e-14. That is
+    invisible in the coordinates and catastrophic in a mask, because a facet lying exactly on
+    grid points (the {101} faces of `pyramid_mask` do) resolves the strict inequality one way
+    at +x and the other way at -x. This form is symmetric by construction: the i-th and
+    (n-1-i)-th entries are exact negatives of one another.
+
+    For even `n` the points straddle zero (no point at the origin); for odd `n` the centre
+    point is exactly 0.0.
+    """
+    return (np.arange(n) - (n - 1) / 2.0) * h
+
+
+def mask_volume_error(mask, h, exact_volume):
+    """Relative error of a mask's voxel-counted volume against the analytic one.
+
+    Returns (counted - exact)/exact. Staircasing on a shape with sloping facets is not a small
+    effect: for `pyramid_mask` this runs from -0.5% at a well-aligned spacing to +47% at a
+    badly-aligned one, with no smooth trend in between -- the sign and size depend on whether
+    the facets fall just inside or just outside the sample points. Always measure it rather
+    than assuming a finer grid is a better one.
+    """
+    return float(mask.sum() * h ** 3 / exact_volume - 1.0)
+
+
+def mirror_asymmetry(mask, axis=0):
+    """Number of voxels where `mask` disagrees with its own reflection about `axis`.
+
+    Must be exactly 0 for every dot shape in this module, all of which are mirror-symmetric in
+    x and y by construction. A nonzero count means the coordinate axis is not symmetric (see
+    `centered_axis`), and any symmetry-derived result -- p-state degeneracy, the C4
+    antisymmetry of the piezoelectric potential -- is then measuring the grid, not the physics.
+    """
+    return int((np.flip(mask, axis=axis) != mask).sum())
 
 
 # --- Dot shape masks (all take coordinate arrays from np.meshgrid(..., indexing='ij')) ---

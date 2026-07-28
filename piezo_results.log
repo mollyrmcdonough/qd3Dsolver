@@ -1,0 +1,45 @@
+==============================================================================
+ONE-BAND ELECTRON with piezoelectric potential  (h = 0.5, verified-clean grid)
+==============================================================================
+The p-state splitting is the signature: a C4v pyramid has degenerate p_x/p_y, and the
+piezoelectric potential is the term that reduces the symmetry to C2v and splits them.
+
+  h=0.5 pad=10.0  grid (69, 69, 55) = 261,855 pts, volume err -0.001
+    piezo potential: -55.79 .. +55.79 meV, C4 antisymmetry 8.7e-16
+  LOBPCG: 198.4s, 1183 iterations, block 9, max residual on the wanted 6: 9.04e-10 eV; gap to next Ritz value 5.07 meV
+    m=0.023  no piezo  E0=1.36822 eV  binding  150.8 meV  bound=3  p-splitting    0.000 meV
+  LOBPCG: 273.0s, 1974 iterations, block 9, max residual on the wanted 6: 4.68e-10 eV; gap to next Ritz value 6.71 meV
+    m=0.023     piezo  E0=1.36804 eV  binding  151.0 meV  bound=3  p-splitting    2.564 meV
+  LOBPCG: 1050.3s, 736 iterations, block 9, max residual on the wanted 6: 8.38e-07 eV; gap to next Ritz value 11.19 meV
+    m=0.040  no piezo  E0=1.33473 eV  binding  184.3 meV  bound=3  p-splitting    0.000 meV
+  LOBPCG: 147.3s, 955 iterations, block 9, max residual on the wanted 6: 3.80e-10 eV; gap to next Ritz value 1.35 meV
+    m=0.040     piezo  E0=1.33461 eV  binding  184.4 meV  bound=3  p-splitting    3.738 meV
+
+==============================================================================
+MULTIBAND HOLES with piezoelectric potential  (h = 1.0, verified-clean grid)
+==============================================================================
+  grid (31, 31, 24) = 23,064 pts, volume err -0.005
+  piezo potential -55.14 .. +55.14 meV, C4 antisymmetry 7.6e-16
+  --- no piezo
+  LOBPCG: 49.3s, 303 iterations, block 9, max residual on the wanted 6: 5.14e-09 eV; gap to next Ritz value 27.25 meV
+      4-band hole levels (meV): [189.   189.   156.65 156.65]   1-2 splitting 32.35 meV  (49s)
+  LOBPCG: 91.1s, 451 iterations, block 9, max residual on the wanted 6: 6.58e-09 eV; gap to next Ritz value 15.95 meV
+      6-band hole levels (meV): [202.62 202.62 180.58 180.58]   1-2 splitting 22.04 meV  (91s)
+  --- piezo
+  LOBPCG: 46.8s, 345 iterations, block 9, max residual on the wanted 6: 6.97e-09 eV; gap to next Ritz value 24.00 meV
+      4-band hole levels (meV): [189.58 189.58 159.23 159.23]   1-2 splitting 30.35 meV  (47s)
+  LOBPCG: 96.2s, 477 iterations, block 9, max residual on the wanted 6: 7.29e-09 eV; gap to next Ritz value 14.58 meV
+      6-band hole levels (meV): [203.44 203.44 182.53 182.53]   1-2 splitting 20.92 meV  (96s)
+grid (31, 31, 24), piezo phi -55.14 .. +55.14 meV
+hole levels are Kramers pairs; the C4v->C2v signature is E[2] vs E[4]
+
+  4-band
+     no piezo  levels [189.004 189.004 156.65  156.65  153.648 153.648]
+               s-p gap  32.354 meV   p-doublet splitting   3.002 meV   Kramers residual 2.27e-13 meV   (147s)
+        piezo  levels [189.578 189.578 159.229 159.229 152.246 152.246]
+               s-p gap  30.349 meV   p-doublet splitting   6.983 meV   Kramers residual 2.84e-13 meV   (112s)
+  6-band
+     no piezo  levels [202.62  202.62  180.579 180.579 171.215 171.215]
+               s-p gap  22.041 meV   p-doublet splitting   9.364 meV   Kramers residual 4.55e-13 meV   (1311s)
+        piezo  levels [203.444 203.444 182.525 182.525 170.87  170.87 ]
+               s-p gap  20.919 meV   p-doublet splitting  11.655 meV   Kramers residual 3.69e-13 meV   (176s)

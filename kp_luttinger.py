@@ -1,4 +1,16 @@
-"""6-band Luttinger-Kohn k.p Hamiltonian, bulk (k treated as a number, not yet an operator).
+"""6-band Luttinger-Kohn k.p Hamiltonian, bulk -- SUPERSEDED AND KNOWN WRONG.
+
+Use kp_pryor.bulk_hamiltonian instead. Two errors, neither caught by the validation described
+below: the split-off band is placed at -delta instead of +delta on the hole-convention
+diagonal, and the R/S off-diagonal elements are in the wrong positions (21 meV of spurious
+anisotropy in the spherical approximation, where the valence bands must be exactly isotropic).
+The [001] effective-mass checks that this module WAS validated against cannot detect either,
+because R and S vanish along [001] by symmetry. Kept only so the earlier notebooks still
+import; do not use for new work.
+
+Original docstring follows.
+
+6-band Luttinger-Kohn k.p Hamiltonian, bulk (k treated as a number, not yet an operator).
 
 This is deliberately the *first* step towards a multiband QD solver: before ever trying to
 discretize k -> -i d/dr on a grid (which requires careful, error-prone treatment of the

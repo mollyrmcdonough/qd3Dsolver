@@ -1,0 +1,70 @@
+==============================================================================
+ONE-BAND ELECTRON  (Pryor: E0 ~ 1.41 eV at m=0.023 with 1 bound state;
+                    E0 ~ 1.38 eV, E1-E0 ~ 110 meV, extra binding ~30 meV at m=0.040)
+==============================================================================
+
+  h=0.7 pad=10.5  grid (51, 51, 41) = 106,641 pts
+    trace in dot: corrected -0.08861   old hydrostatic-only -0.10795
+  LOBPCG: 50.7s, 909 iterations, block 9, max residual on the wanted 6: 6.75e-10 eV; gap to next Ritz value 2.03 meV
+    corrected m=0.023  well  425.9 meV  E0=1.3795 eV  binding  139.5 meV  bound=1
+  LOBPCG: 36.9s, 635 iterations, block 9, max residual on the wanted 6: 6.87e-10 eV; gap to next Ritz value 5.67 meV
+    corrected m=0.040  well  425.9 meV  E0=1.3449 eV  binding  174.1 meV  bound=3  E1-E0=  132.4 meV
+  LOBPCG: 45.8s, 885 iterations, block 9, max residual on the wanted 6: 7.39e-10 eV; gap to next Ritz value 6.20 meV
+          old m=0.023  well  297.0 meV  E0=1.4466 eV  binding   72.4 meV  bound=1
+  LOBPCG: 45.9s, 951 iterations, block 9, max residual on the wanted 6: 5.77e-10 eV; gap to next Ritz value 3.59 meV
+          old m=0.040  well  297.0 meV  E0=1.4266 eV  binding   92.4 meV  bound=1
+
+  h=0.7 pad=14.0  grid (61, 61, 51) = 189,771 pts
+    trace in dot: corrected -0.08824   old hydrostatic-only -0.10795
+  LOBPCG: 141.9s, 1482 iterations, block 9, max residual on the wanted 6: 2.34e-10 eV; gap to next Ritz value 0.07 meV
+    corrected m=0.023  well  428.3 meV  E0=1.3768 eV  binding  142.2 meV  bound=1
+  LOBPCG: 94.3s, 905 iterations, block 9, max residual on the wanted 6: 6.42e-10 eV; gap to next Ritz value 0.04 meV
+    corrected m=0.040  well  428.3 meV  E0=1.3423 eV  binding  176.7 meV  bound=3  E1-E0=  132.1 meV
+  LOBPCG: 632.4s, 1326 iterations, block 9, max residual on the wanted 6: 9.82e-09 eV; gap to next Ritz value 3.55 meV
+          old m=0.023  well  297.0 meV  E0=1.4466 eV  binding   72.4 meV  bound=1
+  LOBPCG: 260.5s, 3396 iterations, block 9, max residual on the wanted 6: 4.91e-10 eV; gap to next Ritz value 0.81 meV
+          old m=0.040  well  297.0 meV  E0=1.4266 eV  binding   92.4 meV  bound=1
+
+==============================================================================
+MULTIBAND  (Pryor: 4-band hole ~195, 6-band ~235, 8-band hole ~195 meV;
+            8-band electron ~1.35 eV)
+==============================================================================
+
+  h=1.4 pad=8.4  grid (23, 23, 18) = 9,522 pts, 76,176 unknowns (8-band)
+    strain in dot: trace -0.08927  biaxial -0.09845  rms ezx 0.01040
+    --- old (hydro only)
+  LOBPCG: 10.2s, 264 iterations, block 6, max residual on the wanted 4: 1.70e-09 eV; gap to next Ritz value 2.59 meV
+        4-band hole ground state   116.7 meV above GaAs VB edge   (10s)
+  LOBPCG: 21.2s, 359 iterations, block 6, max residual on the wanted 4: 3.16e-09 eV; gap to next Ritz value 2.01 meV
+        6-band hole ground state   122.5 meV above GaAs VB edge   (21s)
+  folded LOBPCG: 56.3s, 722 iterations, block 5, sigma = 1.2220 eV, max residual 8.76e-08 eV
+  folded LOBPCG: 89.1s, 1196 iterations, block 5, sigma = 0.1562 eV, max residual 1.09e-07 eV
+        8-band electron 1.3675 eV   8-band hole   106.4 meV (145s)
+    --- corrected+shear
+  LOBPCG: 6.1s, 154 iterations, block 6, max residual on the wanted 4: 6.76e-09 eV; gap to next Ritz value 4.35 meV
+        4-band hole ground state   188.3 meV above GaAs VB edge   (6s)
+  LOBPCG: 12.1s, 192 iterations, block 6, max residual on the wanted 4: 7.85e-09 eV; gap to next Ritz value 10.45 meV
+        6-band hole ground state   202.4 meV above GaAs VB edge   (12s)
+  folded LOBPCG: 41.8s, 581 iterations, block 5, sigma = 1.0648 eV, max residual 7.81e-08 eV
+  folded LOBPCG: 220.0s, 2381 iterations, block 5, sigma = 0.1531 eV, max residual 2.01e-06 eV
+  WARNING: residual exceeds 1e-06 eV -- the folded problem is badly conditioned; move sigma closer to the wanted states or raise maxiter.
+        8-band electron 1.2636 eV   8-band hole   154.8 meV (262s)
+
+  h=1.0 pad=8.0  grid (31, 31, 24) = 23,064 pts, 184,512 unknowns (8-band)
+    strain in dot: trace -0.08936  biaxial -0.10054  rms ezx 0.01108
+    --- old (hydro only)
+  LOBPCG: 39.3s, 471 iterations, block 6, max residual on the wanted 4: 6.25e-09 eV; gap to next Ritz value 12.44 meV
+        4-band hole ground state   138.3 meV above GaAs VB edge   (39s)
+  LOBPCG: 87.2s, 679 iterations, block 6, max residual on the wanted 4: 7.28e-09 eV; gap to next Ritz value 10.26 meV
+        6-band hole ground state   148.2 meV above GaAs VB edge   (87s)
+  folded LOBPCG: 145.5s, 830 iterations, block 5, sigma = 1.2220 eV, max residual 6.03e-08 eV
+  folded LOBPCG: 341.4s, 1476 iterations, block 5, sigma = 0.1562 eV, max residual 8.51e-08 eV
+        8-band electron 1.3818 eV   8-band hole   108.0 meV (487s)
+    --- corrected+shear
+  LOBPCG: 26.7s, 260 iterations, block 6, max residual on the wanted 4: 3.79e-09 eV; gap to next Ritz value 3.00 meV
+        4-band hole ground state   189.0 meV above GaAs VB edge   (27s)
+  LOBPCG: 47.3s, 252 iterations, block 6, max residual on the wanted 4: 6.23e-09 eV; gap to next Ritz value 9.36 meV
+        6-band hole ground state   202.6 meV above GaAs VB edge   (47s)
+  folded LOBPCG: 192.2s, 1167 iterations, block 5, sigma = 1.0613 eV, max residual 1.05e-07 eV
+  folded LOBPCG: 706.0s, 3248 iterations, block 5, sigma = 0.1535 eV, max residual 7.79e-07 eV
+        8-band electron 1.2916 eV   8-band hole   148.9 meV (898s)
