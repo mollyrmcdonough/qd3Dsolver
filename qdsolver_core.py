@@ -206,6 +206,120 @@ def lens_mask(X, Y, Z, base_radius, height, z_base=0.0):
     return (zz >= 0.0) & ((X ** 2 + Y ** 2) / base_radius ** 2 + (zz / height) ** 2 < 1.0)
 
 
+def island_grid(extent, h, pad, z_pad=None):
+    """Grid sized for a flat faceted island, sampled at CELL CENTRES in all three directions.
+
+    `extent` is (length, width, height) of the island; the island base sits at z = 0 with `pad`
+    nm of matrix around it laterally and `z_pad` (default `pad`) above and below. Returns
+    (cx, cy, cz, X, Y, Z) with X, Y, Z from meshgrid(..., indexing='ij').
+
+    Why this exists rather than just calling `centered_axis` three times
+    -------------------------------------------------------------------
+    A faceted island is bounded by flat planes, and `dash_mask` includes its boundary. If a
+    sample point lands exactly ON a bounding plane, the whole cell around it is counted, and for
+    a thin island that is a large fraction of the volume: a 1 nm tall slab on a grid with a point
+    at z = 0 and h = 0.5 picks up layers at z = 0, 0.5 and 1.0, i.e. 1.5 nm of thickness -- 50%
+    too much, and the error does not go away by refining h, it only halves.
+
+    Sampling at cell centres instead makes the count exact whenever the island dimensions are
+    integer multiples of h: cells span [0, h], [h, 2h], ... and the boundary falls between
+    samples. That means an EVEN number of points laterally (so the points straddle x = 0) and a
+    half-cell offset vertically.
+
+    This is the opposite parity from what the {101} pyramid wants at some spacings. That is the
+    documented trap, not a contradiction: mask volume error is a property of the shape AND the
+    grid together, it is not monotone in h, and it must be measured with `mask_volume_error`
+    rather than assumed. Every notebook here asserts it.
+    """
+    length, width, height = extent
+    zp = pad if z_pad is None else z_pad
+    nx = max(2, int(round((length + 2 * pad) / h)) // 2 * 2)   # EVEN: straddles x = 0
+    ny = max(2, int(round((width + 2 * pad) / h)) // 2 * 2)    # EVEN: straddles y = 0
+    kz0 = int(round(zp / h))
+    nz = kz0 + int(round((height + zp) / h))
+    cx, cy = centered_axis(nx, h), centered_axis(ny, h)
+    cz = (np.arange(nz) - kz0 + 0.5) * h                       # cell centres, base at z = 0
+    X, Y, Z = np.meshgrid(cx, cy, cz, indexing='ij')
+    return cx, cy, cz, X, Y, Z
+
+
+#: Default side-facet contact angle for `dash_mask`, degrees. 11.3 deg is the {105} facet angle,
+#: arctan(1/5) -- the shallow facet of the classic elongated "hut" islands. It is a DEFAULT, not
+#: a property of any particular material system; set it from your own facet indexing.
+DASH_CONTACT_ANGLE_DEG = 11.3
+
+
+def dash_mask(X, Y, Z, length, width, height, contact_angle_deg=DASH_CONTACT_ANGLE_DEG,
+              z_base=0.0):
+    """Elongated faceted island -- a "quantum dash": truncated rectangular pyramid.
+
+    Rectangular base `length` x `width` in the plane z = z_base, four side facets sloping inward
+    at a fixed contact angle, and a FLAT TOP at z_base + `height`. The inward set-back at height
+    z is z / tan(theta), the same on all four facets, so the top face measures
+    (length - 2*height/tan(theta)) x (width - 2*height/tan(theta)).
+
+    Geometry after J. Tersoff and R. M. Tromp, "Shape transition in growth of strained islands:
+    Spontaneous formation of quantum wires", Phys. Rev. Lett. 70, 2782 (1993). Their island is
+    rectangular-based with a flat top: the energy per unit volume is written in terms of the two
+    base dimensions and the height, and carries a separate top-facet surface energy alongside the
+    interface and substrate terms, which a pointed pyramid or a dome would not have. Their result
+    is the shape transition itself -- below a critical size the island is compact and roughly
+    symmetric, above it the island elongates at essentially fixed width, because a long thin
+    island relaxes its strain better. Aspect ratios above 50:1 were observed for Ag on Si(001).
+
+    Provenance note, per this package's citation policy: the PRL itself is paywalled and returned
+    403, so the geometry above is taken from the paper's abstract plus secondary descriptions of
+    its energy expression, not from the original text. The shape is therefore reliable at the
+    level of "rectangular base, sloping facets, flat top"; the specific facet angle is NOT fixed
+    by that paper and is left as `contact_angle_deg` for you to set.
+
+    Setting length == width gives the symmetric truncated pyramid, which is the compact end of
+    Tersoff and Tromp's transition. Raising `height` to (width/2)*tan(theta) shrinks the top in
+    the narrow direction to a line, giving the pointed ridge ("hut"); beyond that the shape is
+    geometrically impossible and a ValueError is raised rather than a silently clipped mask.
+
+    Exact volume, for `mask_volume_error`: `dash_volume(length, width, height, angle)`.
+    """
+    tan_t = np.tan(np.deg2rad(contact_angle_deg))
+    _check_dash(length, width, height, tan_t)
+    zz = Z - z_base
+    inset = zz / tan_t
+    return ((zz >= 0.0) & (zz <= height)
+            & (np.abs(X) <= length / 2.0 - inset)
+            & (np.abs(Y) <= width / 2.0 - inset))
+
+
+def _check_dash(length, width, height, tan_t):
+    if width > length:
+        raise ValueError(f"dash: length ({length}) must be >= width ({width}); the elongation "
+                         f"is along x by convention")
+    h_max = (width / 2.0) * tan_t
+    if height > h_max + 1e-12:
+        raise ValueError(
+            f"dash: height {height:.3f} exceeds {h_max:.3f}, the height at which the facets "
+            f"meet across the width ({width}) at this contact angle. Lower the height, widen "
+            f"the island, or steepen the facets.")
+
+
+def dash_volume(length, width, height, contact_angle_deg=DASH_CONTACT_ANGLE_DEG):
+    """Exact volume enclosed by `dash_mask` (truncated rectangular pyramid).
+
+    Integrating the cross-section (L - k z)(W - k z) with k = 2/tan(theta) from 0 to h:
+        V = L*W*h - k*(L + W)*h^2/2 + k^2*h^3/3
+    """
+    tan_t = np.tan(np.deg2rad(contact_angle_deg))
+    _check_dash(length, width, height, tan_t)
+    k = 2.0 / tan_t
+    return (length * width * height
+            - k * (length + width) * height ** 2 / 2.0
+            + k ** 2 * height ** 3 / 3.0)
+
+
+def lens_volume(base_radius, height):
+    """Exact volume enclosed by lens_mask: half an ellipsoid of revolution."""
+    return (2.0 / 3.0) * np.pi * base_radius ** 2 * height
+
+
 def pyramid_mask(X, Y, Z, base, z_base=0.0):
     """Square-based pyramid with {101}-type side facets: base of side `base` centered on the
     z axis in the plane z = z_base, apex at z_base + base/2. The {101} facets fix the aspect

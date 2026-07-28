@@ -23,14 +23,20 @@ There is no build step and no package install — modules import each other by b
 python scripts/elasticity_validation.py    # the elasticity solvers, against analytic ground truth
 python scripts/strain_validation.py        # strain tensor + Bir–Pikus terms
 python scripts/pryor_fig2.py               # reproduce Pryor's Fig. 2 (homogeneous elasticity)
+python pryor_fig4.py                       # bound-state energies vs island size (Fig. 4)
 python pryor_fig6.py                       # ground-state exciton wave functions (Fig. 6)
 ```
+
+`pryor_fig4.py` is the one long run here (~1 h: an eight-band solve for four Kramers pairs in
+each band at each of seven island sizes). It checkpoints to `fig4_levels.json` after every size,
+so an interrupted sweep resumes instead of restarting; pass sizes on the command line
+(`python pryor_fig4.py 10 12`) to do a subset.
 
 Notebooks are the primary deliverables and assume the working directory is the repository root:
 
 | Notebook | What it shows |
 |---|---|
-| `pryor_inhomogeneous.ipynb` | **Start here.** Pryor's own FD + conjugate-gradient elasticity, applied to his Fig. 2 and Fig. 6. |
+| `pryor_inhomogeneous.ipynb` | **Start here.** Pryor's own FD + conjugate-gradient elasticity, applied to his Figs. 2, 4 and 6. |
 | `pryor_fig2.ipynb` | Fig. 2 with the faster Fourier (homogeneous) strain solver. |
 | `pryor_benchmark.ipynb` | Bound-state energies vs Pryor's Fig. 7. *See "Trust" below.* |
 | `interband_strain_terms.ipynb` | The strain-dependent interband terms *u*, *v*. |
@@ -106,8 +112,12 @@ in that limit), and for speed.
 | `eigensolvers.py` | LOBPCG, folded-spectrum and shift-invert solvers, plus a residual-based verification layer. |
 
 ### Reproductions
-`pryor_fig6.py` builds the b = 14 nm environment, runs the eight-band Hartree exciton and renders
-the isosurfaces; it is imported by `pryor_inhomogeneous.ipynb` (hence its place at the root).
+| Module | Contents |
+|---|---|
+| `pryor_fig4.py` | Bound-state energies vs island size (Fig. 4). Environment build, localization scoring that separates bound states from finite-box states, Kramers pairing, the size sweep, both panels, and `check_claims` — which prints each quantitative statement in Pryor's Sec. V beside what this code gives. |
+| `pryor_fig6.py` | The b = 14 nm environment, the eight-band Hartree exciton, and the isosurface rendering (Fig. 6). |
+
+Both are imported by `pryor_inhomogeneous.ipynb`, hence their place at the root.
 
 ---
 
@@ -154,7 +164,7 @@ answers — that happened here and invalidated a session's worth of eight-band h
 
 | Status | Files |
 |---|---|
-| **Current** | `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
+| **Current** | `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_fig4`, `pryor_fig6`, `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
 | **Superseded, still correct** | `qdsolver_core.trace_strain_from_mask` — hydrostatic-only *and* returns constrained rather than elastic strain, overstating the band-edge shift by 1.165×. Kept only so older notebooks still run. |
 | **Known wrong — do not use** | `kp_luttinger.py` and `kp_confined.build_confined_luttinger_kohn` — the split-off band is on the wrong side of the diagonal and the R/S off-diagonals are misplaced. Both carry docstrings saying so. |
 | **Suspect results** | `pryor_benchmark.ipynb` and `multiband_bulk_validation.ipynb` import `kp_luttinger`; their **multiband** numbers predate the matrix fix. Their single-band content is unaffected. |
@@ -171,6 +181,10 @@ answers — that happened here and invalidated a session's worth of eight-band h
 - **The pyramid apex is unresolvable.** It tapers to a geometric point, so the topmost cells are
   1–2 across and their strain is staircase noise. Read the taper where the cross-section is still
   ≳8 cells wide.
+- **Weakly bound levels are not converged in box size.** An electron bound by ~6 meV has a decay
+  length near 10 nm, comparable to the padding around the island, so levels within a few tens of
+  meV of the barrier edge shift when the box grows. The Fig. 4 notebook measures this rather than
+  assuming it away; deep levels are unaffected.
 - **Linear elasticity** at ~7% mismatch is being pushed, and **continuum** elasticity gives the
   pyramid C4v symmetry rather than the true C2v of the zincblende lattice — only an atomistic
   relaxation recovers that (Pryor, Kim, Wang, Williamson & Zunger, *J. Appl. Phys.* **83**, 2548
