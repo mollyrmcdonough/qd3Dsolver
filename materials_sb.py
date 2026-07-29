@@ -95,6 +95,84 @@ INGASB_VBO_BOWING = 0.0
 
 _GASB_AV = {'database': -1.32, 'signfixed': 1.32, 'vurgaftman': 0.80}
 
+#: GaSb's absolute valence-band energy. See `GASB_VBO_SOURCE`.
+#:
+#: 'database'     -- -6.25 eV as stored in aestimo's database.py.
+#: 'pryor_pistol' -- -6.12 eV, derived from C. E. Pryor and M.-E. Pistol, "Band-edge diagrams
+#:                   for strained III-V semiconductor quantum wells, wires, and dots",
+#:                   arXiv:cond-mat/0501090 (published as Phys. Rev. B 72, 205311 (2005)).
+#:                   Their Table I gives unstrained band edges on a scale where the unstrained
+#:                   InSb valence edge is zero; subtracting each material's gap from its
+#:                   diagonal (same-material) conduction entry recovers the valence offsets:
+#:                       InAs  -0.173 - 0.417 = -0.590
+#:                       GaSb   0.782 - 0.812 = -0.030
+#:                       InSb   reference      =  0.000
+#:                   Our database reproduces InAs (-0.58) and InSb (0.00) but puts GaSb at
+#:                   -0.16 rather than -0.03 -- 130 meV too low. Anchoring GaSb to InSb with
+#:                   their value gives -6.09 - 0.030 = -6.12 eV on our absolute scale.
+_GASB_VBO = {'database': -6.25, 'pryor_pistol': -6.12}
+
+#: Which GaSb valence-band offset to use. Defaults to the Pryor-Pistol-derived value: it is the
+#: better-sourced of the two (that table was fetched and read, unlike the database entry, whose
+#: provenance is only "Vurgaftman et al." at the file level), and it is the one that reproduces
+#: their published broken-gap overlap for a GaSb dot on InAs.
+GASB_VBO_SOURCE = 'pryor_pistol'
+
+#: Varshni parameters from Vurgaftman, Meyer and Ram-Mohan, J. Appl. Phys. 89, 5815 (2001) --
+#: reference [5] of Pryor & Pistol, who state they took all material parameters from it at
+#: T = 0 K. Eg(T) = Eg0 - alpha*T^2/(T + beta); Eg0 and alpha*T in eV, beta in K.
+#:
+#: This matters more than a 60-90 meV gap shift usually would, because the module was already
+#: internally inconsistent: the GaSb VBO above was DERIVED from Pryor & Pistol's Table I using
+#: their 0 K gaps (0.417 and 0.812), while `SB_MATERIALS` carried database.py's 300 K gaps.
+#: Switching to 0 K makes the offsets and the gaps come from the same temperature.
+_VARSHNI = {
+    'InAs': dict(Eg0=0.417, alpha=0.276e-3, beta=93.0),
+    'GaSb': dict(Eg0=0.812, alpha=0.417e-3, beta=140.0),
+    'InSb': dict(Eg0=0.235, alpha=0.320e-3, beta=170.0),
+}
+
+#: The gaps as transcribed from aestimo's database.py, kept so the switch is reversible. These
+#: are ~300 K values: Varshni at 300 K gives 0.354 / 0.727 / 0.174, which matches GaSb and InSb
+#: but not InAs, whose database entry of 0.400 sits between the 0 K and 300 K values.
+_DATABASE_EG = {'InAs': 0.400, 'GaSb': 0.726, 'InSb': 0.174}
+
+#: Which gaps are in force: 'database' or 'varshni'. See `set_gap_source`.
+GAP_SOURCE = 'database'
+
+#: Temperature the Varshni gaps are evaluated at, K. Only meaningful when GAP_SOURCE='varshni'.
+GAP_TEMPERATURE = None
+
+
+def varshni(name, T):
+    """Eg(T) for one binary, from the Vurgaftman Varshni parameters. `name` is a key of
+    `_VARSHNI`. At T = 0 this returns Eg0 exactly."""
+    p = _VARSHNI[name]
+    return p['Eg0'] - p['alpha'] * T ** 2 / (T + p['beta'])
+
+
+def set_gap_source(source, T=0.0):
+    """Switch the band gaps between database.py's values and Varshni at temperature `T`.
+
+    Same reason this is a function rather than a constant as `set_gasb_av`: `SB_MATERIALS` is
+    populated at import, so reassigning a module constant afterwards would be a silent no-op.
+
+    Changing Eg is not local -- it feeds the conduction edge (Ec = Ev + Eg), the Kane band-edge
+    mass in `electron_mass`, and the eight-band Hamiltonian through the same Eg. `ingasb(x)`
+    re-reads `SB_MATERIALS` on every call, so alloys follow automatically.
+
+    Returns the gaps now in force.
+    """
+    if source not in ('database', 'varshni'):
+        raise ValueError(f"unknown source {source!r}; choose 'database' or 'varshni'")
+    global GAP_SOURCE, GAP_TEMPERATURE
+    for name, mat in SB_MATERIALS.items():
+        mat['Eg'] = _DATABASE_EG[name] if source == 'database' else varshni(name, T)
+    GAP_SOURCE = source
+    GAP_TEMPERATURE = None if source == 'database' else float(T)
+    return {name: mat['Eg'] for name, mat in SB_MATERIALS.items()}
+
+
 #: Where each value came from. 'db' = transcribed from aestimo's database.py; 'db/x10' = same,
 #: with the documented factor-of-10 unit correction; 'derived' = computed here from db values;
 #: 'UNVERIFIED' = not in the database and not checked against a source -- a knob, not a datum.
@@ -143,6 +221,38 @@ SB_MATERIALS = {
 }
 
 SB_MATERIALS['GaSb']['a_v'] = _GASB_AV[GASB_AV_CONVENTION]
+SB_MATERIALS['GaSb']['VBO'] = _GASB_VBO[GASB_VBO_SOURCE]
+
+
+def set_gasb_vbo(source):
+    """Switch GaSb's absolute valence-band offset at runtime; returns the value now in force.
+
+    Same reasoning as `set_gasb_av`: the module constant is read once at import, so reassigning
+    it afterwards would be a silent no-op.
+    """
+    if source not in _GASB_VBO:
+        raise ValueError(f"unknown source {source!r}; choose from {list(_GASB_VBO)}")
+    global GASB_VBO_SOURCE
+    GASB_VBO_SOURCE = source
+    SB_MATERIALS['GaSb']['VBO'] = _GASB_VBO[source]
+    return SB_MATERIALS['GaSb']['VBO']
+
+
+def set_gasb_av(convention):
+    """Switch GaSb's a_v convention at runtime and return the value now in force.
+
+    `GASB_AV_CONVENTION` is read once at import to populate SB_MATERIALS, so reassigning the
+    module constant afterwards would have no effect -- a silent no-op that would make a
+    sensitivity study look like it found nothing. This updates the dict, which is what every
+    downstream function actually reads. `ingasb(x)` interpolates from the dict on each call, so
+    alloys pick the change up automatically.
+    """
+    if convention not in _GASB_AV:
+        raise ValueError(f"unknown convention {convention!r}; choose from {list(_GASB_AV)}")
+    global GASB_AV_CONVENTION
+    GASB_AV_CONVENTION = convention
+    SB_MATERIALS['GaSb']['a_v'] = _GASB_AV[convention]
+    return SB_MATERIALS['GaSb']['a_v']
 
 #: Gap bowing for In(x)Ga(1-x)Sb, from database.py's InGaSb entry.
 INGASB_EG_BOWING = 0.415
@@ -167,7 +277,10 @@ def ingasb(x, eg_bowing=INGASB_EG_BOWING, vbo_bowing=INGASB_VBO_BOWING):
     out['Eg'] = x * a['Eg'] + (1 - x) * b_['Eg'] - eg_bowing * x * (1 - x)
     out['VBO'] = x * a['VBO'] + (1 - x) * b_['VBO'] - vbo_bowing * x * (1 - x)
     out['x'] = x
-    out['name'] = f"In{x:.2f}Ga{1-x:.2f}Sb"
+    # At the end points the alloy IS the binary -- every linear key collapses to it and the
+    # bowing term x(1-x) vanishes -- so name it that way rather than "In1.00Ga0.00Sb". This is
+    # cosmetic, but it is what makes `build` readable in a notebook about an InSb dot.
+    out['name'] = {0.0: 'GaSb', 1.0: 'InSb'}.get(x, f"In{x:.2f}Ga{1-x:.2f}Sb")
     return out
 
 

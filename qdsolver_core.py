@@ -206,6 +206,35 @@ def lens_mask(X, Y, Z, base_radius, height, z_base=0.0):
     return (zz >= 0.0) & ((X ** 2 + Y ** 2) / base_radius ** 2 + (zz / height) ** 2 < 1.0)
 
 
+def spherical_cap_mask(X, Y, Z, base_radius, height, z_base=0.0):
+    """Lens cut from a SPHERE: the cap of height `height` standing on the disk of radius
+    `base_radius` in the plane z = z_base.
+
+    This is the dot geometry of C. E. Pryor and M.-E. Pistol, "Band-edge diagrams for strained
+    III-V semiconductor quantum wells, wires, and dots", Phys. Rev. B 72, 205311 (2005), whose
+    Fig. 1(a) draws the lens as a cap sliced off a sphere, with h/d = 1/4.
+
+    Not interchangeable with `lens_mask`, despite both being called "lens". A half-ellipsoid
+    meets the substrate VERTICALLY at its rim (dz/dr diverges there), while a spherical cap
+    meets it at a finite contact angle -- 53.1 degrees at h/d = 1/4. The ellipsoid also encloses
+    more volume for the same base and height ((2/3)*pi*a^2*h against pi*h^2*(3R-h)/3, 23% more
+    at h/d = 1/4), and the excess sits at the rim, where the strain is least homogeneous. Band
+    edges averaged over the dot volume therefore differ between the two shapes.
+
+    The sphere radius follows from the base and height as R = (a^2 + h^2) / 2h, so the cap is
+    fixed by the same two arguments `lens_mask` takes.
+    """
+    R = (base_radius ** 2 + height ** 2) / (2.0 * height)
+    zz = Z - z_base
+    return (zz >= 0.0) & (X ** 2 + Y ** 2 + (zz - (height - R)) ** 2 <= R ** 2)
+
+
+def spherical_cap_volume(base_radius, height):
+    """Exact volume enclosed by `spherical_cap_mask`: pi*h^2*(3R - h)/3."""
+    R = (base_radius ** 2 + height ** 2) / (2.0 * height)
+    return np.pi * height ** 2 * (3.0 * R - height) / 3.0
+
+
 def island_grid(extent, h, pad, z_pad=None):
     """Grid sized for a flat faceted island, sampled at CELL CENTRES in all three directions.
 
@@ -243,10 +272,17 @@ def island_grid(extent, h, pad, z_pad=None):
     return cx, cy, cz, X, Y, Z
 
 
-#: Default side-facet contact angle for `dash_mask`, degrees. 11.3 deg is the {105} facet angle,
-#: arctan(1/5) -- the shallow facet of the classic elongated "hut" islands. It is a DEFAULT, not
-#: a property of any particular material system; set it from your own facet indexing.
-DASH_CONTACT_ANGLE_DEG = 11.3
+#: Default side-facet contact angle for `dash_mask`, degrees.
+#:
+#: 54.7356 deg = arctan(sqrt(2)) = arccos(1/sqrt(3)) is the angle a {111} plane makes with the
+#: (001) base -- the natural low-index facet family for a zincblende island grown on (001), and
+#: the sensible starting point for the III-V systems here.
+#:
+#: Other facet families in use, if you want them: 45 deg for {101} (the family of the Pryor
+#: pyramid elsewhere in this package) and 11.3 deg = arctan(1/5) for {105}, the very shallow
+#: facet of the classic Ge/Si "hut" islands. This is a DEFAULT, not a property of any material
+#: system; `dash_mask` takes the angle explicitly, so set it from your own facet indexing.
+DASH_CONTACT_ANGLE_DEG = 54.7356
 
 
 def dash_mask(X, Y, Z, length, width, height, contact_angle_deg=DASH_CONTACT_ANGLE_DEG,

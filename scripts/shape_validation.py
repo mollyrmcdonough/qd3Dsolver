@@ -42,17 +42,23 @@ for h in (0.5, 0.25, 0.125):
     m = qd.dash_mask(X, Y, Z, L, W, H, TH)
     errs.append(report(f"h = {h}", m, h, exact, 0.15))
 
-# The absolute error is not the interesting quantity -- a staircase approximation of a sloping
-# facet is first-order accurate, so what has to be true is that the error HALVES as h halves.
-# A flat or erratic sequence would mean the grid is sampling the boundary planes rather than
-# resolving the facets, which is the failure mode this whole grid convention exists to avoid.
-print("  convergence: error should halve as h halves (first order in h for a faceted shape)")
+# The absolute error is not the interesting quantity. A staircase approximation of a sloping
+# facet is first-order accurate AT WORST, so what has to be true is that the error at least
+# halves as h halves. A flat or erratic sequence would mean the grid is sampling the bounding
+# planes rather than resolving the facets, which is the failure mode this grid convention exists
+# to avoid -- see the contrast block below.
+#
+# There is deliberately no UPPER bound on the ratio. Converging faster than first order is not a
+# failure, and it happens here: at the {111} angle the facet sets back h/tan(theta) = 0.707 cells
+# per layer, which the cubic grid staircases far more cleanly than a shallow facet does, and the
+# observed ratios run 2.5-4. An upper bound would flag that as broken.
+print("  convergence: error should at least halve as h halves (first order is the worst case)")
 for i in range(1, len(errs)):
     ratio = errs[i - 1] / errs[i]
-    good = 1.7 < ratio < 2.4
+    good = ratio > 1.7
     ok &= good
     print(f"    ratio {errs[i-1]:+.4f} / {errs[i]:+.4f} = {ratio:.2f}   "
-          f"{'ok' if good else 'FAIL -- not first order'}")
+          f"{'ok' if good else 'FAIL -- slower than first order'}")
 
 print("\n  the same shape on a grid with sample points ON the bounding planes, for contrast:")
 for h in (0.5, 0.25, 0.125):

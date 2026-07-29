@@ -13,7 +13,7 @@ LENS = dict(
     title='InAs / In$_x$Ga$_{1-x}$Sb / InAs — lens-shaped dot',
     shape_params="""# --- SHAPE: circular lens (half-ellipsoid dome) ---------------------------------
 RADIUS   = 10.0        # nm, base radius
-HEIGHT   = 4.0         # nm, apex height above the base plane
+HEIGHT   = 6.0         # nm, apex height above the base plane
 
 shape = ig.lens(RADIUS, HEIGHT)""",
     shape_note="""A lens is the rotationally symmetric case: circular base, dome top, in-plane $C_\\infty$
@@ -35,8 +35,10 @@ DASH = dict(
 # sloping side facets at a fixed contact angle, flat top.
 LENGTH   = 40.0        # nm, base length along [100] (the elongation axis)
 WIDTH    = 16.0        # nm, base width along [010]
-HEIGHT   = 3.0         # nm, height of the flat top above the base plane
-ANGLE    = 25.0        # deg, side-facet contact angle
+HEIGHT   = 6.0         # nm, height of the flat top above the base plane
+ANGLE    = 54.7356     # deg, side-facet contact angle = arctan(sqrt(2)): the angle a {111}
+                       # plane makes with the (001) base, i.e. {111} side facets. Try 45.0
+                       # for {101} or 11.3 for the very shallow {105} hut facets.
 
 shape = ig.dash(LENGTH, WIDTH, HEIGHT, ANGLE)""",
     shape_note="""The dash is a **truncated rectangular pyramid**: rectangular base, four side facets at a
@@ -57,8 +59,14 @@ island.
 abstract plus secondary descriptions of the paper's energy expression -- which is written in terms
 of the two base dimensions and the height and carries a separate **top-facet** surface energy, and
 that top term is what rules out a pointed pyramid or a dome. The shape is reliable at the level of
-"rectangular base, sloping facets, flat top". The facet angle is *not* fixed by that paper, so
-`ANGLE` is yours to set.""",
+"rectangular base, sloping facets, flat top". The facet angle is *not* fixed by that paper.
+
+`ANGLE` defaults to $\arctan\sqrt{2} = 54.7356°$, the angle a $\{111\}$ plane makes with the
+$(001)$ base -- the natural low-index facet family for a zincblende island grown on $(001)$. Set
+it to $45°$ for $\{101\}$ (the family of the Pryor pyramid elsewhere in this package) or
+$11.3° = \arctan(1/5)$ for the very shallow $\{105\}$ facets of Ge/Si hut clusters. The choice
+matters for more than looks: shallow facets remove so much material from a narrow island that
+whole aspect ratios become geometrically unable to hold a given volume.""",
     sweep_name='aspect',
     sweep_values='(1.0, 2.0, 3.0, 4.0, 6.0)',
     sweep_shape="_dash_at_aspect",
@@ -86,11 +94,14 @@ X_COMP   = 0.35        # InSb fraction of the In(x)Ga(1-x)Sb dot: 0 = GaSb, 1 = 
 {shape_params}
 
 # --- NUMERICS -------------------------------------------------------------------
-H_GRID   = 0.5         # nm, grid spacing
-PAD      = {pad}        # nm, matrix around the island. The electron pocket here is SHALLOW,
-                       # so this has to be large; a box-convergence check is run below.
+H_GRID   = 0.75        # nm, grid spacing. The single-band solver factorizes the Hamiltonian
+                       # completely (sparse LU), and 3D fill-in grows fast, so this is a
+                       # compromise: 0.5 nm here would be ~1e6 points and thrash.
+PAD      = {pad}        # nm, matrix around the island. The strain pocket is SHALLOW and the
+                       # electron is not bound by it, so the apparent binding depends on the
+                       # box; the ladder below measures that drift explicitly.
 USE_PIEZO = True
-RUN_EIGHT_BAND = False # opt-in: minutes, not seconds. See the last section.
+RUN_EIGHT_BAND = True  # the hole needs it; see the last section for the cost and caveats.
 
 # --- MATERIAL CONVENTIONS -------------------------------------------------------
 # See materials_sb.py: the source database has a sign inconsistency in GaSb's a_v that
@@ -100,6 +111,9 @@ print(f"GaSb a_v convention: {{ms.GASB_AV_CONVENTION!r}} -> a_v = "
       f"{{ms.SB_MATERIALS['GaSb']['a_v']:+.2f}} eV")
 print(f"dot = {{ms.ingasb(X_COMP)['name']}}, shape = {{shape['label']}}")
 print(f"island volume {{shape['volume']:.1f}} nm^3")"""
+
+
+FORCE = False
 
 
 def build(cfg, pad):
@@ -123,15 +137,27 @@ about 20 meV at $x=0$ rising to 180 meV at $x=1$. So this is not a type-I dot wi
 a hole sharing a box. Holes are confined in the island. Electrons are **expelled** from it, because
 the island's conduction edge sits far above the matrix's.
 
-**What binds the electron is strain, not a band offset.** The island is compressed by the matrix
-(misfit runs $-0.6\\%$ to $-6.5\\%$ across the composition range), and by reaction the InAs wrapped
-around it is put into *tension*. Since $a_c < 0$, tension pulls the InAs conduction edge **down**,
-so the island digs a shallow conduction-band pocket in the matrix around itself. That pocket is
-the only thing holding the electron, and it is a genuinely inhomogeneous-strain effect — a model
-with uniform strain inside the island and zero outside would not have it at all.
+**The only thing that could bind the electron is strain, not a band offset.** The island is
+compressed by the matrix (misfit runs $-0.6\\%$ to $-6.5\\%$ across the composition range), and by
+reaction the InAs wrapped around it is put into *tension*. Since $a_c < 0$, tension pulls the InAs
+conduction edge **down**, so the island digs a conduction-band pocket in the matrix around itself
+— a genuinely inhomogeneous-strain effect that a model with uniform strain inside the island and
+none outside would not have at all.
 
-That is also why the electron and hole end up spatially separated, which is the defining feature
-of a type-II dot and the reason these structures are interesting for long-lived carriers.
+**That pocket turns out not to bind an electron anywhere in this parameter range**, and this
+notebook measures that rather than assuming it either way. Across $x = 0.35 \\to 1.0$ the deepest
+point of the pocket runs 83 $\\to$ 190 meV, and with a 4$\\times$ larger island on top of that the
+computed ground state moves by 3.6 meV — in the *wrong* direction, because what is being measured
+is box zero-point energy, not binding. The reason is geometric: binding any state in a spherical
+well of depth $V_0$ and radius $R$ needs $V_0R^2 > \\pi^2\\hbar^2/8m \\approx 3.78$ eV nm$^2$ at the
+InAs electron mass, and this pocket reaches at most $2.45$ — an estimate that is itself
+*optimistic*, since the pocket is a thin shell wrapped around a large repulsive barrier, and a
+shell binds worse than a compact sphere of equal volume.
+
+So the electron is held by Coulomb attraction to the hole in the island, not by a single-particle
+well. That is the standard type-II picture, and it is why the sweeps below plot $V_0R^2$ against
+the binding threshold rather than an "electron binding energy" — the latter, out of a finite box,
+would be measuring the box.
 
 {cfg['shape_note']}
 
@@ -204,25 +230,45 @@ print(f"Kramers degeneracy residual: {ig.band_profiles(env)['kramers']:.2e} eV")
 plt.show()""")
 
     md("""---
-## The electron: a shallow pocket, and whether the box is deciding it
+## The electron: does the strain pocket bind anything?
 
-The pocket is tens of meV deep and the electron mass in InAs is small (~0.025 $m_0$), which is a
-marginal combination for binding a state at all. A finite box adds its own confinement energy of
-the same order, so **the box can manufacture or destroy the bound state**. That has to be measured
-before any statement about binding means anything.""")
+The pocket is tens of meV deep and the InAs electron mass is small (~0.025 $m_0$), which is a
+marginal combination. A finite box adds confinement energy of the same order, so **a small box
+manufactures a bound state that is not there**. Two checks, in that order: watch the apparent
+binding drift with box size, then apply a criterion that does not depend on the box at all.""")
 
-    co("""for pad_ in (PAD, PAD * 1.5, PAD * 2.0):
-    e_ = ig.build(shape, X_COMP, h=H_GRID, pad=pad_, use_piezo=USE_PIEZO, verbose=False)
+    co("""# Run the ladder at a COARSER grid than the main calculation: this is a convergence test
+# in box size, not in h, and the top of the ladder is a large grid. The single-band solver
+# factorizes completely, so cost grows quickly with the number of points.
+H_BOX = 1.0
+print(f"{'pad':>6} {'box (nm)':>20} {'points':>10} {'pocket':>9} {'E0':>9} "
+      f"{'apparent binding':>18} {'in dot':>7}")
+for pad_ in (8.0, 15.0, 22.0, 30.0):
+    e_ = ig.build(shape, X_COMP, h=H_BOX, pad=pad_, use_piezo=USE_PIEZO, verbose=False)
     s_ = ig.electron_states(e_, k=2, verbose=False)
     pocket = e_['Ec_far'] - e_['Ec'][~e_['mask']].min()
-    print(f"pad {pad_:5.1f} nm  box {len(e_['cx'])*H_GRID:5.1f} x {len(e_['cy'])*H_GRID:5.1f} x "
-          f"{len(e_['cz'])*H_GRID:5.1f} nm   pocket {pocket*1e3:6.1f} meV   "
-          f"E0 {s_['E'][0]:.4f} eV   binding {(e_['Ec_far']-s_['E'][0])*1e3:+7.1f} meV   "
-          f"{s_['inside'][0]*100:4.1f}% in dot")
+    box = f"{len(e_['cx'])*H_BOX:.0f} x {len(e_['cy'])*H_BOX:.0f} x {len(e_['cz'])*H_BOX:.0f}"
+    print(f"{pad_:>6.0f} {box:>20} {e_['mask'].size:>10,} {pocket*1e3:>8.1f}m "
+          f"{s_['E'][0]:>9.4f} {(e_['Ec_far']-s_['E'][0])*1e3:>17.1f}m "
+          f"{s_['inside'][0]*100:>6.1f}%")
     del e_, s_""")
 
+    md("""The apparent binding above should be shrinking steadily as the box grows, with no sign of
+settling — that is what an *unbound* state looks like in a finite box: its energy is box
+zero-point, which falls as $1/L^2$, and it approaches the barrier edge from above rather than
+converging below it.
+
+The check that does not care about the box is geometric. A finite spherical well of depth $V_0$
+and radius $R$ holds at least one bound state only if $V_0R^2 > \\pi^2\\hbar^2/8m$. Taking $R$ from
+the volume of matrix lying below the far-field conduction edge at each depth threshold gives a
+direct verdict — and it is a *generous* one, because the real pocket is a thin shell wrapped
+around a large repulsive barrier, and a shell binds worse than a compact sphere of the same
+volume. If the generous version fails, the real one does too.""")
+
+    co("""_ = ig.pocket_metrics(env)""")
+
     co("""st = ig.electron_states(env, k=4)
-print(f"\\nbound states below the far-field InAs conduction edge: {st['n_bound']}")
+print(f"\\nstates below the far-field InAs conduction edge: {st['n_bound']}")
 print("A small 'inside the dot' fraction is CORRECT here -- the electron is expelled from the")
 print("island and lives in the tensile InAs shell around it. A large fraction would mean the")
 print("band alignment had come out type-I, i.e. something is wrong.")""")
@@ -269,61 +315,172 @@ plt.show()""")
 {cfg['sweep_note']}""")
 
     if cfg['sweep_name'] == 'aspect':
-        co("""V_TARGET = shape['volume']
+        co("""ASPECTS = (1.0, 1.5, 2.0, 3.0, 4.0)
+
+# Both the VOLUME and the HEIGHT are held fixed across the series, and the base is solved for.
+# The alternative -- fix the base area and solve for height -- drives the narrow end toward its
+# geometric ceiling, where the flat top has nearly vanished and the island is really a pointed
+# ridge; the series would then vary aspect ratio AND top-face fraction AND height at once, and
+# no trend could be attributed to elongation. This way aspect ratio is the only thing changing.
+V_TARGET = shape['volume']
+t_ = np.tan(np.deg2rad(ANGLE))
+print(f"holding volume = {V_TARGET:.1f} nm^3 and height = {HEIGHT:g} nm fixed; "
+      f"width floor = 2H/tan(theta) = {2*HEIGHT/t_:.2f} nm")
+print(f"  {'aspect':>7} {'L base':>8} {'W base':>8} {'L top':>8} {'W top':>8} {'top cells':>10}")
+for a_ in ASPECTS:
+    l_, w_ = ig.dash_base_for_aspect(a_, HEIGHT, V_TARGET, ANGLE)
+    ins = 2 * HEIGHT / t_
+    flag = '' if (w_ - ins) / H_GRID >= 4 else '   <- top too narrow to resolve'
+    print(f"  {a_:>6.1f}:1 {l_:>8.2f} {w_:>8.2f} {l_-ins:>8.2f} {w_-ins:>8.2f} "
+          f"{(w_-ins)/H_GRID:>10.1f}{flag}")
 
 def _dash_at_aspect(a):
-    \"\"\"Dash of aspect ratio `a` holding the volume fixed at the reference island's.\"\"\"
-    w = np.sqrt(LENGTH * WIDTH / a)
-    l = w * a
-    hgt = ig.dash_height_for_volume(l, w, V_TARGET, ANGLE)
-    if hgt is None:
-        raise ValueError(f"aspect {a}: width {w:.1f} nm too narrow to hold {V_TARGET:.0f} nm^3 "
-                         f"at {ANGLE} deg facets")
-    return ig.dash(l, w, hgt, ANGLE), X_COMP
+    dims = ig.dash_base_for_aspect(a, HEIGHT, V_TARGET, ANGLE)
+    if dims is None:
+        raise ValueError(f"no base holds {V_TARGET:.0f} nm^3 at height {HEIGHT:g} nm, "
+                         f"{ANGLE:g} deg facets")
+    return ig.dash(dims[0], dims[1], HEIGHT, ANGLE), X_COMP
 
-print(f"target volume {V_TARGET:.1f} nm^3, facets {ANGLE} deg\\n")
-rows_s = []
-for a_ in (1.0, 2.0, 3.0, 4.0, 6.0):
-    try:
-        rows_s += ig.sweep(_dash_at_aspect, (a_,), 'aspect', h=H_GRID, pad=PAD,
-                           use_piezo=USE_PIEZO)
-    except ValueError as exc:
-        print(f"  aspect = {a_}: skipped -- {exc}")""")
-    else:
-        co("""rows_s = ig.sweep(lambda r: (ig.lens(r, HEIGHT * r / RADIUS), X_COMP),
-                  (6.0, 8.0, 10.0, 12.0, 14.0), 'radius',
-                  h=H_GRID, pad=PAD, use_piezo=USE_PIEZO)""")
+rows_s = ig.sweep(_dash_at_aspect, ASPECTS, 'aspect', h=H_GRID, pad=PAD,
+                  use_piezo=USE_PIEZO)""")
 
     co(f"""fig = ig.plot_sweep(rows_s, '{cfg['sweep_name']}')
 fig.suptitle(f"size sweep — dot = {{ms.ingasb(X_COMP)['name']}}", fontsize=10, y=1.04)
 plt.show()""")
 
-    md("""---
-## Eight-band states (opt-in)
+    md(r"""---
+# Eight-band hole states
 
-Set `RUN_EIGHT_BAND = True` in the parameter cell to run this. It costs minutes rather than
-seconds, and it is what the hole actually requires.
+The hole is the reason this system is interesting and the one carrier a single band cannot
+describe: it sits in a narrow-gap alloy strained by several percent, where heavy and light hole
+are split by hundreds of meV and strongly mixed. Everything above this point was landscape; this
+is the actual state.
 
-**Read this before believing the numbers.** In a broken-gap system "the states near the valence
-edge" is not a clean idea: the island's valence edge lies *above* the matrix's conduction edge, so
-at one and the same energy there are island-like valence states and matrix-like conduction states,
-and they hybridize. A folded-spectrum solve returns the eigenvalues nearest $\\sigma$, and its
-residual certifies only that they *are* eigenpairs — not that they are the ones wanted. That
-failure mode has already cost this project a session's worth of invalidated numbers in the
-InAs/GaAs benchmark, where the gap was not even broken.
+### The grid is chosen differently here, and deliberately
 
-So the localization fraction printed beside each state is not decoration; it is the only thing
-separating a hole state from a matrix electron state at the same energy. Re-run with $\\sigma$
-moved and confirm the spectrum is unchanged before quoting anything.""")
+The electron needed a *large box* because it is unbound. The hole is the opposite — several
+hundred meV deep and tightly localized in the island — so the box can be small, and the grid
+spacing spent on **resolving the island** instead. That is why this section builds its own
+environment at $h = 1$ nm with only 8 nm of padding rather than reusing `env`.
 
-    co("""if RUN_EIGHT_BAND:
-    t0 = time.time()
-    vb = ig.eight_band_states(env, band='vb', k=4)
-    print(f"\\n{time.time()-t0:.0f}s")
-    print("re-run with sigma raised to confirm these are the intended states:")
-    print("  ig.eight_band_states(env, band='vb', k=4)  after editing kp.hole_sigma's margin")
+Vertical resolution is the binding constraint. These islands are flat, so $z$ is the dominant
+confinement direction, and it is the one a cubic grid resolves worst. At a 6 nm island height and
+$h = 1$ nm there are 6 cells through the island; at the 3 nm height used earlier there were only
+3, which is not enough to quote a ground-state energy from.
+
+### Two things that could invalidate the numbers, both checked below
+
+**1. $\sigma$ targeting is genuinely ambiguous in a broken-gap system.** The island's valence edge
+lies *above* the matrix's conduction edge, so in the ~200 meV between them, island-like valence
+states and matrix-like conduction box states exist at the *same energy*. A folded-spectrum solve
+returns whatever is nearest $\sigma$, and its residual certifies only that the result *is* an
+eigenpair — not that it is the one wanted. That exact failure invalidated a session's worth of
+hole numbers in the InAs/GaAs benchmark, where the gap was not even broken. The localization
+fraction is the only discriminator, and the solve is repeated with $\sigma$ moved.
+
+**2. The valence-band parameters are the least trustworthy in the set.** GaSb's $a_v$ sign is a
+judgement call that sets the well depth outright, so the whole calculation is run under *both*
+conventions and the spread reported rather than a single number. The $[111]$ shear deformation
+potential $d$ is worse — it is not in the database at all, and it enters the Bir–Pikus $S$ term,
+which is specifically a valence-mixing term. That one is left as a separate sensitivity study.""")
+
+    co("""H8, PAD8 = 1.0, 8.0          # own grid: small box, resolution spent on the island
+
+if RUN_EIGHT_BAND:
+    results8 = {}
+    for conv in ('signfixed', 'database'):
+        av = ms.set_gasb_av(conv)
+        print(f"{'='*78}\\nGaSb a_v = {av:+.2f} eV  ({conv});  "
+              f"alloy a_v = {ms.ingasb(X_COMP)['a_v']:+.4f} eV\\n{'='*78}")
+        t0 = time.time()
+        env8 = ig.build(shape, X_COMP, h=H8, pad=PAD8, use_piezo=USE_PIEZO)
+        zc = int(env8['mask'][env8['mask'].shape[0]//2, env8['mask'].shape[1]//2, :].sum())
+        print(f"  z-cells through the island centre: {zc}")
+        hw8 = ig.hole_well(env8)
+        print(f"  hole well depth {hw8['depth']*1e3:.1f} meV, "
+              f"broken-gap overlap {hw8['broken_gap']*1e3:.1f} meV")
+        vb = ig.eight_band_states(env8, band='vb', k=4)
+        results8[conv] = dict(E=vb['E'].copy(), inside=vb['inside'].copy(),
+                              sigma=vb['sigma'], well=hw8['depth'],
+                              a_v=ms.ingasb(X_COMP)['a_v'])
+        print(f"  {time.time()-t0:.0f}s")
+        del env8, vb
+    ms.set_gasb_av('signfixed')      # restore the module default
 else:
-    print("RUN_EIGHT_BAND is False -- skipped. Set it True in the parameter cell to run.")""")
+    results8 = {}
+    print("RUN_EIGHT_BAND is False -- skipped.")""")
+
+    md("""### How much does the `a_v` convention move the answer?
+
+This is the point of running both. If the two columns agree, the sign ambiguity does not matter
+for what we care about and can be set aside. If they do not, every hole energy in this notebook
+carries that spread as a systematic uncertainty, and it should be quoted with one.""")
+
+    co("""if results8:
+    a, b = results8['signfixed'], results8['database']
+    print(f"{'':>26} {'signfixed':>12} {'database':>12} {'difference':>12}")
+    print(f"{'GaSb a_v (eV)':>26} {'+1.32':>12} {'-1.32':>12}")
+    print(f"{'alloy a_v (eV)':>26} {a['a_v']:>12.4f} {b['a_v']:>12.4f} "
+          f"{b['a_v']-a['a_v']:>12.4f}")
+    print(f"{'hole well depth (meV)':>26} {a['well']*1e3:>12.1f} {b['well']*1e3:>12.1f} "
+          f"{(b['well']-a['well'])*1e3:>12.1f}")
+    print(f"{'sigma used (eV)':>26} {a['sigma']:>12.4f} {b['sigma']:>12.4f}")
+    print()
+    print(f"{'state':>6} {'E signfixed':>14} {'in dot':>8} {'E database':>14} {'in dot':>8} "
+          f"{'shift (meV)':>12}")
+    for j in range(min(len(a['E']), len(b['E']))):
+        print(f"{j:>6} {a['E'][j]:>14.4f} {a['inside'][j]*100:>7.1f}% "
+              f"{b['E'][j]:>14.4f} {b['inside'][j]*100:>7.1f}% "
+              f"{(b['E'][j]-a['E'][j])*1e3:>12.1f}")
+    print()
+    print("Level SPACINGS are the quantity to compare -- they are what an experiment measures,")
+    print("and they are far less sensitive to a rigid shift of the well than the absolute")
+    print("energies are.")
+    for lbl, r in (('signfixed', a), ('database', b)):
+        sp = np.diff(r['E']) * 1e3
+        print(f"  {lbl:>10}: " + ", ".join(f"{d:+.1f}" for d in sp) + " meV")""")
+
+    md(r"""### Is $\sigma$ returning the states we think it is?
+
+The check that matters. `hole_sigma` targets the exact $k=0$ top of the local valence band, but
+in a broken-gap system there are matrix conduction states at the same energy. Re-solving with
+$\sigma$ pushed *up* by 100 meV should return the same island-localized levels — if instead a
+different set appears, or the localization fractions collapse, then $\sigma$ was picking states
+out of the matrix continuum and the energies above are not hole states.""")
+
+    co("""if results8:
+    ms.set_gasb_av('signfixed')
+    env8 = ig.build(shape, X_COMP, h=H8, pad=PAD8, use_piezo=USE_PIEZO, verbose=False)
+    base = results8['signfixed']
+    import kp_pryor as kp
+    m8 = env8['mask']
+    sig_hi = kp.hole_sigma(env8['Ev'], env8['strain'],
+                           np.where(m8, env8['dot']['b'], env8['matrix']['b']),
+                           np.where(m8, env8['dot']['d'], env8['matrix']['d']),
+                           np.where(m8, env8['dot']['delta_so'], env8['matrix']['delta_so']),
+                           inside_mask=m8, margin=0.100)
+    print(f"sigma: {base['sigma']:.4f} eV  ->  {sig_hi:.4f} eV (+100 meV)\\n")
+
+    ops = __import__('kp_confined').GridOperators(m8.shape, H8, periodic=False)
+    fields = kp.material_fields(m8, ms.kp_params(env8['dot']), ms.kp_params(env8['matrix']),
+                                env8['Ev'], env8['Ec'], n_bands=8)
+    import eigensolvers as eig
+    H = kp.confined_hamiltonian(ops, fields, n_bands=8, strain=env8['strain'])
+    E2, V2, info2 = eig.solve_interior(H, k=4, sigma=sig_hi, tol=1e-7, maxiter=8000)
+    n_ = m8.size
+    inside2 = np.array([float((np.abs(V2[:, j].reshape(8, n_))**2).sum(axis=0)
+                              .reshape(m8.shape)[m8].sum() / (np.abs(V2[:, j])**2).sum())
+                        for j in range(V2.shape[1])])
+    print(f"\\n{'state':>6} {'E at sigma':>13} {'in dot':>8} {'E at sigma+100':>16} {'in dot':>8} "
+          f"{'diff (meV)':>11}")
+    for j in range(min(len(base['E']), len(E2))):
+        print(f"{j:>6} {base['E'][j]:>13.4f} {base['inside'][j]*100:>7.1f}% "
+              f"{E2[j]:>16.4f} {inside2[j]*100:>7.1f}% "
+              f"{(E2[j]-base['E'][j])*1e3:>11.2f}")
+    same = np.allclose(np.sort(base['E']), np.sort(E2), atol=2e-3)
+    print(f"\\nsame spectrum to 2 meV: {same}")
+    print("If False, sigma placement is selecting different states and NOTHING above is safe.")
+    del env8, H""")
 
     md("""---
 ## What this notebook does and does not establish
@@ -344,17 +501,44 @@ in the code enforces.
   often opposed in strained III-V dots (Bester, Zunger and co-workers, *Phys. Rev. B* **74**,
   081305(R) and *Phys. Rev. Lett.* **96**, 187602, both 2006).
 * *Linear elasticity* is being pushed hard at the In-rich end, where the misfit reaches 6.5%.
-* *No excitonic binding.* In a type-II structure the electron and hole are spatially separated and
-  the Coulomb attraction is a leading, not a small, contribution to whether the electron is bound
-  at all. The single-particle pocket studied here is only part of the story.""")
+* *No excitonic binding, and here that is the main gap.* The single-particle strain pocket does
+  not bind an electron, so what binds it is the Coulomb attraction to the hole — a leading
+  contribution, not a correction. `schrodinger_poisson.py` in this package already does a
+  self-consistent electron–hole pair for the type-I case; extending it here is the obvious next
+  step, and until then this notebook describes the *landscape* the exciton would live in rather
+  than the exciton itself.""")
 
     nb['cells'] = c
     nb.metadata.kernelspec = dict(display_name='Python 3', language='python', name='python3')
     path = os.path.join(ROOT, cfg['fname'])
+
+    # Refuse to silently destroy executed results. These notebooks take ~25 minutes each to run,
+    # and regenerating one to fix a typo used to wipe the other's outputs as collateral -- which
+    # is exactly what happened once. Pass --force to overwrite an executed notebook deliberately.
+    if os.path.exists(path) and not FORCE:
+        existing = nbf.read(path, as_version=4)
+        n_out = sum(1 for cell in existing.cells
+                    if cell.cell_type == 'code' and cell.get('outputs'))
+        if n_out:
+            print(f"REFUSING to overwrite {cfg['fname']}: it has {n_out} executed cells with "
+                  f"output. Re-run with --force if you really mean to discard them.")
+            return
+
     nbf.write(nb, path)
     print(f"wrote {cfg['fname']} with {len(c)} cells")
 
 
 if __name__ == '__main__':
-    build(LENS, pad=18.0)
-    build(DASH, pad=18.0)
+    import sys
+    args = [a for a in sys.argv[1:]]
+    FORCE = '--force' in args
+    which = [a for a in args if not a.startswith('--')]
+    targets = {'lens': LENS, 'dash': DASH}
+    if not which:
+        which = list(targets)
+    unknown = [w for w in which if w not in targets]
+    if unknown:
+        raise SystemExit(f"unknown target(s) {unknown}; choose from {list(targets)} "
+                         f"(optionally with --force)")
+    for w in which:
+        build(targets[w], pad=15.0)
