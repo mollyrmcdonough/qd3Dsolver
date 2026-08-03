@@ -1,235 +1,229 @@
-"""Material parameters for the InAs / In(x)Ga(1-x)Sb antimonide system.
+"""The InAs / In(x)Ga(1-x)Sb antimonide system: the narrative layer over `materials.py`.
 
-This is a *different* material system from the Pryor InAs/GaAs benchmark, and almost everything
-that made that benchmark easy is absent here. There is no reference calculation to check against,
-the band alignment is broken-gap rather than type-I, and the parameter set has to be assembled
-from a database that is internally inconsistent in two places. So this module is written to make
-provenance visible: every number carries a source tag, `audit()` prints them, and the two values
-that are known to be suspect are switchable rather than silently chosen.
+THE DATA NOW LIVES IN `materials.py`. This module holds no numbers of its own except the legacy
+switches described below, and every value it exposes is the one `materials` carries. New code
+should import `materials` directly:
 
-Where the numbers come from
----------------------------
-Almost all of them are read directly out of `database.py` in the sibling `aestimo` checkout
-(`C:/Users/molly/code/aestimo`), which is this project's own materials database and therefore a
-verifiable provenance chain: the values below were transcribed from it, not recalled. That file
-attributes its III-V entries to Vurgaftman, Meyer and Ram-Mohan, "Band parameters for III-V
-compound semiconductors and their alloys", J. Appl. Phys. 89, 5815 (2001) -- the standard
-compilation for this family. Per the citation policy in `qdsolver_core.py`, table and equation
-numbers from that review are not quoted, because the review itself was not fetched and checked
-while writing this.
+    import materials as mt
+    dot    = mt.material('InGaSb', 0.35)     # or mt.alloy('InGaSb', 0.35)
+    matrix = mt.material('InAs')
+    mt.alignment_table('InAsSb', matrix='InAs')
+    mt.set_temperature(77.0)
 
-Four parameters the eight-band machinery needs are NOT in that database at all: `C44` for GaSb,
-the [111] shear deformation potential `d`, and the piezoelectric constant `e14` for GaSb and
-InSb. They are tagged `UNVERIFIED` below and are exposed as ordinary dictionary entries so they
-can be overridden. Treat them as knobs, not as data.
+This module remains because `ingasb_dot`, three notebooks and five scripts import it, because
+its public names appear throughout their prose, and because the history below is worth keeping
+attached to the system it is about rather than buried in a general database.
 
-Two problems in the source data, neither of them fixed silently
---------------------------------------------------------------
-**1. The elastic constants are in two different units.** In `database.py` the InAs entry has
-`C11 = 8.329` while GaSb has `C11 = 88.42` and InSb `C11 = 68.47`. aestimo multiplies whatever it
-finds by 1e10 to get pascals, so it reads InAs as 83.29 GPa (right) and GaSb as 884 GPa (wrong by
-10x). This module stores GPa throughout and applies the factor of 10 to the InAs/GaAs-family
-entries only. `audit()` re-derives each value so the correction is visible.
+`SB_MATERIALS` is `materials.MATERIALS` -- the SAME dict objects, not a copy, so
+`materials.set_temperature` is visible through it immediately. It now carries GaAs as well as
+the three antimonides; nothing here assumes otherwise, and it makes In(x)Ga(1-x)Sb on GaAs
+available for the price of an argument.
 
-**2. GaSb's valence deformation potential has the wrong sign relative to InAs and InSb.**
-In the convention aestimo actually uses (`E_v -= a_v * Tr(eps)`, which is also Pryor's), the
-database gives a_v = +1.00 for InAs and +0.31 for InSb but **-1.32** for GaSb. A negative a_v
-there means the GaSb valence band moves *down* under the compression that moves InAs's *up*,
-which is not a real physical difference between two closely related III-V antimonides -- it is a
-sign error somewhere upstream. It matters a lot here, because the hole is confined in the
-InGaSb and a_v is what sets the depth of its well.
+What makes this system worth its own module
+-------------------------------------------
+The alignment is BROKEN GAP (type III). The In(x)Ga(1-x)Sb valence edge sits ABOVE the InAs
+conduction edge at every composition -- by 143 meV at x = 0 and 173 meV at x = 1, unstrained --
+so electrons stay in the InAs matrix while holes sit in the dot, spatially separated. The
+electron is not confined by the dot at all; it is expelled from it. What binds it, if anything,
+is a shallow pocket the dot digs in the matrix AROUND itself: the dot is under strong
+compression (misfit -0.5% to -6.5% with composition) and by reaction the InAs immediately
+around it is put into tension, which with a_c negative pulls the InAs conduction edge DOWN.
 
-`GASB_AV_CONVENTION` selects what to do about it, and there is no default that is simply
-"correct":
+That is why this system needed the inhomogeneous elasticity solver rather than the Fourier one.
+The pocket lives in the matrix, where a homogeneous solver gets the stiffness contrast wrong,
+and the In(x)Ga(1-x)Sb is substantially softer than the InAs around it.
 
-  'database'  -- use -1.32 as stored. Reproduces what aestimo would compute. Hole confinement
-                 in the dot comes out qualitatively different, so this is worth running once.
-  'signfixed' -- use +1.32, i.e. the same sign as InAs and InSb, keeping the magnitude.
-  'vurgaftman'-- use +0.80, the magnitude commonly quoted for GaSb in this convention.
-                 UNVERIFIED: not present in database.py and not checked against the review.
+The parameter set had three errors, and they were 130 meV
+---------------------------------------------------------
+The numbers here originally came from `database.py` in the sibling `aestimo` checkout, which
+attributes its III-V entries to Vurgaftman, Meyer and Ram-Mohan (2001) but had transcribed three
+of them wrongly. Checking against the review's own tables -- now `bandparameters_vurgaftman2001
+.xlsx`, see `materials.py` -- found:
 
-The module default is 'signfixed': it is the minimal change that removes the internal
-inconsistency without importing an unverified magnitude. Every function that consumes a_v takes
-the material dicts as arguments, so switching is a one-line change in a notebook.
+    a_v    SIGN FLIPPED for InAs (+1.00 vs -1.00) and InSb (+0.31 vs -0.36)
+    a_c    InSb -6.04 vs -6.94, GaSb -9.33 vs -7.50
+    VBO    GaSb 130 meV too low
 
-Band alignment
---------------
-Unlike the Pryor benchmark, which pins its zero to the unstrained GaAs valence edge and quotes a
-single valence-band offset, this system is handled through *absolute* valence-band energies
-(`VBO`, the `AVb_E` field in database.py: InAs -6.67 eV, GaSb -6.25 eV, InSb -6.09 eV, all on the
-review's common scale). Offsets are then differences, which is the only way to get a three-way
-InAs/GaSb/InSb alloy alignment right.
+The consequence is the hydrostatic gap deformation potential a_gap = a_c + a_v:
 
-That alignment is the whole point of the system. Taking those numbers at face value, unstrained:
+                database    review
+        InAs      -4.08     -6.08     (Pryor 1998 Table I, independently: -6.00)
+        GaSb      -8.01     -8.30
+        InSb      -5.73     -7.30
 
-    InAs   E_v = -6.67   E_c = -6.27
-    GaSb   E_v = -6.25   E_c = -5.52
-    InSb   E_v = -6.09   E_c = -5.92
+-7.30 for InSb is what `scripts/insb_pryor_pistol_check.py` had already back-derived as -7.29 eV
+from Pryor & Pistol's Table I well, BEFORE the workbook was consulted. That 10 meV agreement is
+what pins the error to the parameters rather than to the elasticity or the k.p machinery.
 
-so the In(x)Ga(1-x)Sb *valence* edge lies above the InAs *conduction* edge for every composition
--- by ~20 meV at x = 0 and ~180 meV at x = 1. This is the broken-gap (type-III) alignment InAs/
-GaSb is known for, and it means electrons sit in the InAs matrix while holes sit in the dot,
-spatially separated. Strain then moves both edges by a lot, because the misfit runs from +0.6%
-at x = 0 to +6.9% at x = 1. `alignment_table()` prints where a given composition actually lands.
+A fourth inconsistency was a temperature mismatch rather than a wrong number: the GaSb offset
+was derived from Pryor & Pistol's 0 K table while the gaps in force were aestimo's ~300 K
+values. The whole set is 0 K now, and `materials.electron_mass` reproducing all four tabulated
+band-edge masses to the digit is the check that says so.
 
-The alloy
----------
-In(x)Ga(1-x)Sb, x = InSb fraction, matching database.py's `InGaSb` entry (Material1 = InSb,
-Material2 = GaSb). Everything is interpolated linearly except the gap, which takes that entry's
-bowing parameter, 0.415 eV. Its `delta_bowing_param` is 0.0, so the split-off is linear too.
+Results computed before those fixes are wrong by of order 130 meV. See `archive/`.
 
-That entry also carries `AVb_E = -2.1`, which this module deliberately does **not** use. The
-parent materials' `AVb_E` values are absolute energies near -6 eV, so -2.1 cannot be an absolute
-energy for the alloy and must be intended as a bowing parameter -- but a 2.1 eV valence-band
-bowing is implausibly large, and nothing in the file says which it is. Linear VBO interpolation
-is used instead, and `INGASB_VBO_BOWING` exposes the choice.
+The legacy switches
+-------------------
+`GASB_AV_CONVENTION`, `GASB_VBO_SOURCE` and `GAP_SOURCE` predate the audit. They exist to
+reproduce pre-audit behaviour on demand -- for a sensitivity study, or to re-derive how an old
+number came out the way it did -- and every one of them is now known to be a worse choice than
+the default. They are kept working rather than deleted because two scripts use them as exhibits,
+and because a switch that silently stops switching is worse than one that is merely obsolete.
 """
-import numpy as np
+import materials as mt
 
-#: See the module docstring. One of 'database', 'signfixed', 'vurgaftman'.
-GASB_AV_CONVENTION = 'signfixed'
+# --------------------------------------------------------------------------------------
+# Re-exports. These are `materials`' own objects; this module adds nothing to them.
+# --------------------------------------------------------------------------------------
+from materials import (                                          # noqa: F401
+    MATERIALS as SB_MATERIALS,
+    PROVENANCE,
+    a_gap,
+    alignment,
+    band_edge_fields,
+    elastic,
+    electron_mass,
+    kp_params,
+    lowest_valley,
+    material,
+    misfit,
+    set_temperature,
+)
 
-#: Valence-band-offset bowing for In(x)Ga(1-x)Sb, eV. Zero = linear interpolation, which is what
-#: this module uses; see the docstring for why database.py's -2.1 is not adopted.
+#: Gap bowing for In(x)Ga(1-x)Sb, eV. Read from `materials` so there is one copy.
+INGASB_EG_BOWING = mt._BOWING['InGaSb']['bowing']['Eg']
+
+#: Valence-band-offset bowing for In(x)Ga(1-x)Sb, eV. Zero -- the review lists no VBO bowing for
+#: this alloy, so the interpolation is linear. Exposed because it was once a live question:
+#: aestimo's `InGaSb` entry carries `AVb_E = -2.1`, which cannot be an absolute energy (the
+#: parents' are near -6 eV on that scale) and must have been meant as a bowing parameter, but a
+#: 2.1 eV valence bowing is implausibly large and nothing in that file says which it is.
 INGASB_VBO_BOWING = 0.0
 
-_GASB_AV = {'database': -1.32, 'signfixed': 1.32, 'vurgaftman': 0.80}
 
-#: GaSb's absolute valence-band energy. See `GASB_VBO_SOURCE`.
+def ingasb(x, eg_bowing=None, vbo_bowing=None):
+    """In(x)Ga(1-x)Sb parameters. `x` is the InSb fraction, so x = 0 is GaSb and x = 1 is InSb.
+
+    Equivalent to `materials.alloy('InGaSb', x)`, which is what new code should call. The two
+    bowing arguments are kept so a notebook can vary them without touching the tables; pass None
+    (the default) to use the module values.
+
+    Vegard's law for the lattice constant is what makes composition a strain knob here: a0 runs
+    6.0817 -> 6.4690 Angstrom at 0 K, i.e. the misfit against InAs runs -0.52% -> -6.48%.
+    """
+    if eg_bowing is None and vbo_bowing is None:
+        return mt.alloy('InGaSb', x)
+
+    spec = mt._BOWING['InGaSb']
+    bow = dict(spec['bowing'])
+    if eg_bowing is not None:
+        bow['Eg'] = eg_bowing
+    if vbo_bowing is not None:
+        bow['VBO'] = vbo_bowing
+
+    A, B = (SB_MATERIALS[p] for p in spec['parents'])
+    out = {k: x * A[k] + (1 - x) * B[k] - bow.get(k, 0.0) * x * (1 - x)
+           for k in mt._INTERPOLATED}
+    out['system'], out['x'] = 'InGaSb', x
+    out['name'] = ({1.0: 'InSb', 0.0: 'GaSb'}.get(x) or spec['formula'](x))
+    return out
+
+
+def alignment_table(compositions=(0.0, 0.2, 0.35, 0.5, 0.75, 1.0), matrix='InAs',
+                    trace_strain=None):
+    """In(x)Ga(1-x)Sb alignment in `matrix`. See `materials.alignment_table` for the general
+    form, which takes the alloy name first and also handles InAs(1-x)Sb(x) and the binaries."""
+    return mt.alignment_table('InGaSb', compositions, matrix, trace_strain)
+
+
+# --------------------------------------------------------------------------------------
+# Legacy switches. All three reproduce pre-audit behaviour; none is a better choice than
+# the default. See the module docstring.
+# --------------------------------------------------------------------------------------
+
+#: DEPRECATED, and it was based on a WRONG DIAGNOSIS. Kept only so old notebooks still import.
 #:
-#: 'database'     -- -6.25 eV as stored in aestimo's database.py.
-#: 'pryor_pistol' -- -6.12 eV, derived from C. E. Pryor and M.-E. Pistol, "Band-edge diagrams
-#:                   for strained III-V semiconductor quantum wells, wires, and dots",
-#:                   arXiv:cond-mat/0501090 (published as Phys. Rev. B 72, 205311 (2005)).
-#:                   Their Table I gives unstrained band edges on a scale where the unstrained
-#:                   InSb valence edge is zero; subtracting each material's gap from its
-#:                   diagonal (same-material) conduction entry recovers the valence offsets:
-#:                       InAs  -0.173 - 0.417 = -0.590
-#:                       GaSb   0.782 - 0.812 = -0.030
-#:                       InSb   reference      =  0.000
-#:                   Our database reproduces InAs (-0.58) and InSb (0.00) but puts GaSb at
-#:                   -0.16 rather than -0.03 -- 130 meV too low. Anchoring GaSb to InSb with
-#:                   their value gives -6.09 - 0.030 = -6.12 eV on our absolute scale.
-_GASB_VBO = {'database': -6.25, 'pryor_pistol': -6.12}
+#: The reasoning was: aestimo gives a_v = +1.00 (InAs), +0.31 (InSb) and -1.32 (GaSb), GaSb is
+#: the odd sign out, therefore GaSb is the error. Checked against the review directly, it is the
+#: other way round -- a_v is NEGATIVE for all of them, and aestimo had flipped the sign for InAs
+#: and InSb while leaving GaSb's alone. GaSb was the only correct one, and 'signfixed' made it
+#: worse. See `materials.py` for the convention and why it is the one that holds.
+GASB_AV_CONVENTION = 'deprecated'
 
-#: Which GaSb valence-band offset to use. Defaults to the Pryor-Pistol-derived value: it is the
-#: better-sourced of the two (that table was fetched and read, unlike the database entry, whose
-#: provenance is only "Vurgaftman et al." at the file level), and it is the one that reproduces
-#: their published broken-gap overlap for a GaSb dot on InAs.
+_GASB_AV = {'database': -1.32, 'signfixed': 1.32, 'vurgaftman': -0.80}
+
+#: GaSb's valence-band edge, on the review's scale where InSb is zero.
+#:
+#: 'database'     -- -0.16 eV, i.e. aestimo's -6.25 rescaled. 130 meV too low.
+#: 'pryor_pistol' -- -0.03 eV, from C. E. Pryor and M.-E. Pistol, Phys. Rev. B 72, 205311
+#:                   (2005), arXiv:cond-mat/0501090, whose Table I gives unstrained edges on a
+#:                   scale with the InSb valence edge at zero. It coincides with the review's
+#:                   own tabulated value, which is what `materials.py` carries.
+#:
+#: These were quoted as -6.25 and -6.12 eV before the energy zero moved to the review's scale;
+#: the shift is uniform and only differences of VBO are physical, so nothing changed but the
+#: printed numbers.
+_GASB_VBO = {'database': -0.16, 'pryor_pistol': -0.03}
+
 GASB_VBO_SOURCE = 'pryor_pistol'
 
-#: Varshni parameters from Vurgaftman, Meyer and Ram-Mohan, J. Appl. Phys. 89, 5815 (2001) --
-#: reference [5] of Pryor & Pistol, who state they took all material parameters from it at
-#: T = 0 K. Eg(T) = Eg0 - alpha*T^2/(T + beta); Eg0 and alpha*T in eV, beta in K.
-#:
-#: This matters more than a 60-90 meV gap shift usually would, because the module was already
-#: internally inconsistent: the GaSb VBO above was DERIVED from Pryor & Pistol's Table I using
-#: their 0 K gaps (0.417 and 0.812), while `SB_MATERIALS` carried database.py's 300 K gaps.
-#: Switching to 0 K makes the offsets and the gaps come from the same temperature.
-_VARSHNI = {
-    'InAs': dict(Eg0=0.417, alpha=0.276e-3, beta=93.0),
-    'GaSb': dict(Eg0=0.812, alpha=0.417e-3, beta=140.0),
-    'InSb': dict(Eg0=0.235, alpha=0.320e-3, beta=170.0),
-}
-
-#: The gaps as transcribed from aestimo's database.py, kept so the switch is reversible. These
+#: The gaps as transcribed from aestimo's `database.py`, kept so the switch is reversible. These
 #: are ~300 K values: Varshni at 300 K gives 0.354 / 0.727 / 0.174, which matches GaSb and InSb
-#: but not InAs, whose database entry of 0.400 sits between the 0 K and 300 K values.
+#: but not InAs, whose entry of 0.400 sits between the 0 K and 300 K values.
 _DATABASE_EG = {'InAs': 0.400, 'GaSb': 0.726, 'InSb': 0.174}
 
-#: Which gaps are in force: 'database' or 'varshni'. See `set_gap_source`.
-GAP_SOURCE = 'database'
+#: A flat view of the Gamma-valley Varshni parameters, in the shape this module used to expose
+#: them. `materials._VARSHNI` is keyed by valley as well and is the one to read in new code.
+_VARSHNI = {name: dict(zip(('Eg0', 'alpha', 'beta'), vals['G']))
+            for name, vals in mt._VARSHNI.items()}
 
-#: Temperature the Varshni gaps are evaluated at, K. Only meaningful when GAP_SOURCE='varshni'.
-GAP_TEMPERATURE = None
+#: Which gaps are in force: 'database' or 'varshni'. See `set_gap_source`.
+GAP_SOURCE = 'varshni'
+
+#: Temperature the Varshni gaps are evaluated at, K. None when GAP_SOURCE = 'database'.
+GAP_TEMPERATURE = 0.0
 
 
 def varshni(name, T):
-    """Eg(T) for one binary, from the Vurgaftman Varshni parameters. `name` is a key of
-    `_VARSHNI`. At T = 0 this returns Eg0 exactly."""
-    p = _VARSHNI[name]
-    return p['Eg0'] - p['alpha'] * T ** 2 / (T + p['beta'])
+    """Eg(T) at the Gamma point for one binary. `materials.varshni` takes a valley too."""
+    return mt.varshni(name, 'G', T)
 
 
 def set_gap_source(source, T=0.0):
-    """Switch the band gaps between database.py's values and Varshni at temperature `T`.
+    """Switch the band gaps between aestimo's values and Varshni at temperature `T`.
 
-    Same reason this is a function rather than a constant as `set_gasb_av`: `SB_MATERIALS` is
-    populated at import, so reassigning a module constant afterwards would be a silent no-op.
+    A function rather than a constant because `SB_MATERIALS` is populated at import, so
+    reassigning a module constant afterwards would be a silent no-op.
 
-    Changing Eg is not local -- it feeds the conduction edge (Ec = Ev + Eg), the Kane band-edge
-    mass in `electron_mass`, and the eight-band Hamiltonian through the same Eg. `ingasb(x)`
-    re-reads `SB_MATERIALS` on every call, so alloys follow automatically.
+    'varshni' delegates to `materials.set_temperature`, which also moves the LATTICE CONSTANTS.
+    'database' overrides the gaps ONLY and leaves the lattice wherever the current temperature
+    put it -- which is exactly what this function did before the lattice became temperature
+    dependent, and is the behaviour `scripts/insb_band_edges_vs_size.py` relies on to isolate
+    the gap inconsistency from everything else. For a faithful all-300 K legacy reproduction,
+    call `set_temperature(300.0)` first.
+
+    Changing Eg is not local: it feeds the conduction edge, the derived Kane mass, and the
+    eight-band Hamiltonian. `ingasb(x)` re-reads the table on every call, so alloys follow.
 
     Returns the gaps now in force.
     """
     if source not in ('database', 'varshni'):
         raise ValueError(f"unknown source {source!r}; choose 'database' or 'varshni'")
     global GAP_SOURCE, GAP_TEMPERATURE
-    for name, mat in SB_MATERIALS.items():
-        mat['Eg'] = _DATABASE_EG[name] if source == 'database' else varshni(name, T)
+
+    if source == 'varshni':
+        set_temperature(T)
+        GAP_TEMPERATURE = float(T)
+    else:
+        for name, Eg in _DATABASE_EG.items():
+            SB_MATERIALS[name]['Eg'] = Eg
+        GAP_TEMPERATURE = None
     GAP_SOURCE = source
-    GAP_TEMPERATURE = None if source == 'database' else float(T)
-    return {name: mat['Eg'] for name, mat in SB_MATERIALS.items()}
-
-
-#: Where each value came from. 'db' = transcribed from aestimo's database.py; 'db/x10' = same,
-#: with the documented factor-of-10 unit correction; 'derived' = computed here from db values;
-#: 'UNVERIFIED' = not in the database and not checked against a source -- a knob, not a datum.
-PROVENANCE = {
-    'gamma1L': 'db (GA1)', 'gamma2L': 'db (GA2)', 'gamma3L': 'db (GA3)',
-    'Eg': 'db', 'delta_so': 'db (delta)', 'Ep': 'db',
-    'a_c': 'db (Ac)', 'a_v': 'db (Av), sign convention -- see module docstring',
-    'b': 'db (B)', 'd': 'UNVERIFIED -- not in db',
-    'e14': 'InAs: Pryor 1998 Table I. GaSb/InSb: UNVERIFIED -- not in db',
-    'eps_R': 'db (epsilonStatic)',
-    'C11': 'db, GPa', 'C12': 'db, GPa', 'C44': 'InAs: Pryor Table I. GaSb: UNVERIFIED',
-    'a0': 'db', 'VBO': 'db (AVb_E), absolute valence-band energy',
-    'F': 'db, Kane remote-band parameter -- used to DERIVE m_e, see electron_mass()',
-}
-
-#: The three binaries. Energies eV, elastic constants GPa, lattice constants Angstrom.
-#: `VBO` is the ABSOLUTE valence-band energy; band offsets are differences of it.
-SB_MATERIALS = {
-    'InAs': dict(
-        gamma1L=20.4, gamma2L=8.3, gamma3L=9.1,
-        Eg=0.400, delta_so=0.38, Ep=21.5,
-        a_c=-5.08, a_v=1.00, b=-1.8,
-        d=-3.6,                       # UNVERIFIED for this parameter set; Pryor's Table I value
-        e14=0.045, eps_R=15.15, F=-2.9,
-        C11=83.29, C12=45.26, C44=39.59,      # db values x10 -- see docstring
-        a0=6.0583, VBO=-6.67,
-    ),
-    'GaSb': dict(
-        gamma1L=13.4, gamma2L=4.7, gamma3L=6.0,
-        Eg=0.726, delta_so=0.76, Ep=27.0,
-        a_c=-9.33, a_v=None, b=-2.0,          # a_v filled in below from GASB_AV_CONVENTION
-        d=-4.6,                               # UNVERIFIED
-        e14=-0.126, eps_R=15.69, F=-1.63,     # e14 UNVERIFIED (sign conventions vary)
-        C11=88.42, C12=40.26, C44=43.2,       # C44 UNVERIFIED -- not in db
-        a0=6.0959, VBO=-6.25,
-    ),
-    'InSb': dict(
-        gamma1L=34.8, gamma2L=15.5, gamma3L=16.5,
-        Eg=0.174, delta_so=0.81, Ep=23.3,
-        a_c=-6.04, a_v=0.31, b=-2.0,
-        d=-5.0,                               # UNVERIFIED
-        e14=-0.071, eps_R=17.5, F=-0.23,      # e14 UNVERIFIED
-        C11=68.47, C12=37.35, C44=31.11,
-        a0=6.4794, VBO=-6.09,
-    ),
-}
-
-SB_MATERIALS['GaSb']['a_v'] = _GASB_AV[GASB_AV_CONVENTION]
-SB_MATERIALS['GaSb']['VBO'] = _GASB_VBO[GASB_VBO_SOURCE]
+    return {name: SB_MATERIALS[name]['Eg'] for name in _DATABASE_EG}
 
 
 def set_gasb_vbo(source):
-    """Switch GaSb's absolute valence-band offset at runtime; returns the value now in force.
-
-    Same reasoning as `set_gasb_av`: the module constant is read once at import, so reassigning
-    it afterwards would be a silent no-op.
-    """
+    """Switch GaSb's valence-band edge at runtime; returns the value now in force."""
     if source not in _GASB_VBO:
         raise ValueError(f"unknown source {source!r}; choose from {list(_GASB_VBO)}")
     global GASB_VBO_SOURCE
@@ -241,11 +235,8 @@ def set_gasb_vbo(source):
 def set_gasb_av(convention):
     """Switch GaSb's a_v convention at runtime and return the value now in force.
 
-    `GASB_AV_CONVENTION` is read once at import to populate SB_MATERIALS, so reassigning the
-    module constant afterwards would have no effect -- a silent no-op that would make a
-    sensitivity study look like it found nothing. This updates the dict, which is what every
-    downstream function actually reads. `ingasb(x)` interpolates from the dict on each call, so
-    alloys pick the change up automatically.
+    DEPRECATED -- the diagnosis behind it was wrong; see `GASB_AV_CONVENTION`. Kept working so a
+    sensitivity study that flips it does not silently find nothing.
     """
     if convention not in _GASB_AV:
         raise ValueError(f"unknown convention {convention!r}; choose from {list(_GASB_AV)}")
@@ -254,171 +245,22 @@ def set_gasb_av(convention):
     SB_MATERIALS['GaSb']['a_v'] = _GASB_AV[convention]
     return SB_MATERIALS['GaSb']['a_v']
 
-#: Gap bowing for In(x)Ga(1-x)Sb, from database.py's InGaSb entry.
-INGASB_EG_BOWING = 0.415
-
-#: Keys interpolated linearly in x. Everything the eight-band Hamiltonian and the elasticity
-#: solver need, except Eg (bowed) and VBO (bowing exposed separately).
-_LINEAR_KEYS = ('gamma1L', 'gamma2L', 'gamma3L', 'delta_so', 'Ep', 'a_c', 'a_v', 'b', 'd',
-                'e14', 'eps_R', 'C11', 'C12', 'C44', 'a0', 'F')
-
-
-def ingasb(x, eg_bowing=INGASB_EG_BOWING, vbo_bowing=INGASB_VBO_BOWING):
-    """In(x)Ga(1-x)Sb parameters. `x` is the InSb fraction, so x = 0 is GaSb and x = 1 is InSb.
-
-    Linear in everything but the gap. Vegard's law for the lattice constant is what makes the
-    composition a strain knob here: a0 runs 6.0959 -> 6.4794 Angstrom, i.e. the misfit against
-    InAs runs +0.62% -> +6.95%.
-    """
-    if not 0.0 <= x <= 1.0:
-        raise ValueError(f"composition x must be in [0, 1], got {x}")
-    a, b_ = SB_MATERIALS['InSb'], SB_MATERIALS['GaSb']
-    out = {k: x * a[k] + (1 - x) * b_[k] for k in _LINEAR_KEYS}
-    out['Eg'] = x * a['Eg'] + (1 - x) * b_['Eg'] - eg_bowing * x * (1 - x)
-    out['VBO'] = x * a['VBO'] + (1 - x) * b_['VBO'] - vbo_bowing * x * (1 - x)
-    out['x'] = x
-    # At the end points the alloy IS the binary -- every linear key collapses to it and the
-    # bowing term x(1-x) vanishes -- so name it that way rather than "In1.00Ga0.00Sb". This is
-    # cosmetic, but it is what makes `build` readable in a notebook about an InSb dot.
-    out['name'] = {0.0: 'GaSb', 1.0: 'InSb'}.get(x, f"In{x:.2f}Ga{1-x:.2f}Sb")
-    return out
-
-
-def electron_mass(mat):
-    """Conduction-band effective mass in units of m0, DERIVED from the k.p parameters:
-
-        m0/m_e = 1 + 2F + Ep * (Eg + 2*delta/3) / (Eg * (Eg + delta))
-
-    the standard Kane expression relating the eight-band parameter set to the band-edge mass,
-    with F absorbing the remote bands.
-
-    Derived rather than tabulated on purpose. `database.py` lists `m_e = 0.4` for InAs, which is
-    an order of magnitude off (InAs is ~0.026) and is evidently a typo; GaSb 0.039 and InSb
-    0.0135 there are fine. Rather than use two good values and one bad one, all three come from
-    the same formula, which also guarantees the single-band mass is consistent with the
-    eight-band Hamiltonian built from the same Ep, Eg and delta.
-
-    Checked against the accepted values: InAs 0.025 vs 0.026, GaSb 0.035 vs 0.039, InSb 0.010 vs
-    0.0135. The InSb discrepancy is the expected one -- at a 0.17 eV gap the expression is very
-    sensitive to Ep and F.
-    """
-    Eg, D, Ep, F = mat['Eg'], mat['delta_so'], mat['Ep'], mat['F']
-    return 1.0 / (1.0 + 2.0 * F + Ep * (Eg + 2.0 * D / 3.0) / (Eg * (Eg + D)))
-
-
-def elastic(mat):
-    """(C11, C12, C44) in GPa, in the order elasticity_fd and strain_fourier expect."""
-    return (mat['C11'], mat['C12'], mat['C44'])
-
-
-def misfit(dot, matrix):
-    """Lattice-mismatch eigenstrain of `dot` embedded in `matrix`.
-
-    Same definition as qdsolver_core.eigenstrain: (a_matrix - a_dot) / a_dot, negative when the
-    dot must be compressed to fit. Every InGaSb composition is larger than InAs, so this is
-    negative throughout and the dot is under compression.
-    """
-    return (matrix['a0'] - dot['a0']) / dot['a0']
-
-
-def band_edge_fields(inside_mask, trace_strain, dot, matrix, zero='matrix_vb'):
-    """Strained conduction and valence band-edge fields (eV) for a dot in a matrix.
-
-    Convention, matching `pryor1998.band_edge_fields` and aestimo's own `Strain_and_Masses`:
-
-        E_c = E_c(unstrained) + a_c * Tr(eps)
-        E_v = E_v(unstrained) - a_v * Tr(eps)
-
-    with a_v positive for a material whose valence band rises under compression. This is the sign
-    convention `kp_pryor` expects, so the result can be handed straight to `material_fields`.
-    Note it is the OPPOSITE sign on a_v from the Van de Walle convention used by
-    `qdsolver_core.MATERIALS`; mixing them moves the valence band the wrong way.
-
-    Only the hydrostatic part is applied here. The shear part (the Bir-Pikus q, r, s terms) is
-    applied inside the Hamiltonian builder from the full strain tensor, so passing these fields
-    on with `include_hydrostatic=True` would count the hydrostatic shift twice.
-
-    `zero` sets the energy origin: 'matrix_vb' puts zero at the unstrained matrix valence edge
-    (the analogue of Pryor's choice, and what the plots here use), 'absolute' keeps the
-    database's absolute scale.
-    """
-    ref = matrix['VBO'] if zero == 'matrix_vb' else 0.0
-
-    Ev0 = np.where(inside_mask, dot['VBO'] - ref, matrix['VBO'] - ref)
-    Ec0 = Ev0 + np.where(inside_mask, dot['Eg'], matrix['Eg'])
-
-    a_c = np.where(inside_mask, dot['a_c'], matrix['a_c'])
-    a_v = np.where(inside_mask, dot['a_v'], matrix['a_v'])
-
-    return Ec0 + a_c * trace_strain, Ev0 - a_v * trace_strain
-
-
-def kp_params(mat):
-    """A copy of `mat` carrying the keys `kp_pryor.material_fields` reads.
-
-    That function was written against `pryor1998.PRYOR_TABLE_I`, which uses the same key names
-    used here, so this is mostly an assertion that nothing is missing -- it fails loudly rather
-    than letting a KeyError surface from inside the Hamiltonian assembly.
-    """
-    needed = ('gamma1L', 'gamma2L', 'gamma3L', 'Eg', 'delta_so', 'Ep',
-              'a_c', 'a_v', 'b', 'd')
-    missing = [k for k in needed if mat.get(k) is None]
-    if missing:
-        raise KeyError(f"{mat.get('name', '?')} is missing {missing}")
-    return dict(mat)
-
-
-def alignment_table(compositions=(0.0, 0.2, 0.35, 0.5, 0.75, 1.0), matrix='InAs',
-                    trace_strain=None):
-    """Print where each composition puts the band edges, unstrained and (optionally) strained.
-
-    `trace_strain` is a single representative Tr(eps) inside the dot -- pass the mean from a real
-    solve to see where the edges actually land, or leave it None for the unstrained alignment.
-    The last column is the quantity that decides the whole character of the system: the
-    InGaSb valence edge minus the InAs conduction edge. Positive means broken gap.
-    """
-    m = SB_MATERIALS[matrix]
-    ref = m['VBO']
-    Ec_m, Ev_m = m['VBO'] - ref + m['Eg'], m['VBO'] - ref
-
-    print(f"energy zero = unstrained {matrix} valence edge; "
-          f"{matrix}: E_v = {Ev_m:.3f}, E_c = {Ec_m:.3f} eV")
-    if trace_strain is not None:
-        print(f"dot strained with Tr(eps) = {trace_strain:+.4f} (matrix taken unstrained)")
-    head = f"{'x':>5} {'name':>14} {'misfit':>8} {'Eg':>7} {'E_v':>8} {'E_c':>8} {'E_v(dot)-E_c(InAs)':>20}"
-    print(head)
-    for x in compositions:
-        d = ingasb(x)
-        tr = 0.0 if trace_strain is None else trace_strain
-        Ev = d['VBO'] - ref - d['a_v'] * tr
-        Ec = (d['VBO'] - ref + d['Eg']) + d['a_c'] * tr
-        print(f"{x:>5.2f} {d['name']:>14} {misfit(d, m)*100:>7.2f}% {d['Eg']:>7.3f} "
-              f"{Ev:>8.3f} {Ec:>8.3f} {Ev - Ec_m:>+20.3f}")
-    print("\npositive last column = broken gap: the dot's valence edge lies above the "
-          f"{matrix} conduction edge,\nso electrons stay in the matrix and holes in the dot.")
-
 
 def audit():
-    """Print every parameter with its provenance, and re-derive the two known data problems."""
-    print(f"GASB_AV_CONVENTION = {GASB_AV_CONVENTION!r}  ->  GaSb a_v = "
-          f"{SB_MATERIALS['GaSb']['a_v']:+.2f} eV")
-    print(f"INGASB_VBO_BOWING  = {INGASB_VBO_BOWING} eV   (0 = linear VBO interpolation)")
-    print(f"INGASB_EG_BOWING   = {INGASB_EG_BOWING} eV\n")
+    """`materials.audit()`, plus the state of the legacy switches this module still exposes."""
+    mt.audit()
+    print("\n" + "=" * 78)
+    print("legacy switches in `materials_sb` (all three reproduce pre-audit behaviour):")
+    print(f"  GASB_AV_CONVENTION = {GASB_AV_CONVENTION!r:>14}  ->  GaSb a_v = "
+          f"{SB_MATERIALS['GaSb']['a_v']:+.2f} eV   (deprecated: the diagnosis was wrong)")
+    print(f"  GASB_VBO_SOURCE    = {GASB_VBO_SOURCE!r:>14}  ->  GaSb VBO = "
+          f"{SB_MATERIALS['GaSb']['VBO']:+.2f} eV")
+    print(f"  GAP_SOURCE         = {GAP_SOURCE!r:>14}  ->  T = {GAP_TEMPERATURE} K")
+    print(f"  INGASB_EG_BOWING   = {INGASB_EG_BOWING} eV")
+    print(f"  INGASB_VBO_BOWING  = {INGASB_VBO_BOWING} eV  (0 = linear VBO interpolation)")
 
-    keys = [k for k in PROVENANCE if k != 'x']
-    print(f"{'parameter':>10} {'InAs':>9} {'GaSb':>9} {'InSb':>9}   provenance")
-    for k in keys:
-        row = ' '.join(f"{SB_MATERIALS[m][k]:>9.3f}" for m in ('InAs', 'GaSb', 'InSb'))
-        print(f"{k:>10} {row}   {PROVENANCE[k]}")
 
-    print("\nknown problems in the source data:")
-    print("  1. units: database.py stores InAs C11 = 8.329 (1e11 dyne/cm^2) but GaSb C11 = 88.42")
-    print("     and InSb C11 = 68.47 (GPa). aestimo multiplies all three by 1e10, so it reads")
-    print("     GaSb and InSb 10x too stiff. This module stores GPa and applies x10 to InAs only.")
-    print(f"  2. sign: a_v is {SB_MATERIALS['InAs']['a_v']:+.2f} (InAs) and "
-          f"{SB_MATERIALS['InSb']['a_v']:+.2f} (InSb) but -1.32 for GaSb in the database.")
-    print("     A negative a_v moves the valence band the opposite way under compression, which")
-    print("     is not a real difference between these materials. Currently using "
-          f"{SB_MATERIALS['GaSb']['a_v']:+.2f}.")
-    print("\nanything tagged UNVERIFIED is a knob, not a datum -- vary it before trusting a")
-    print("result that depends on it.")
+if __name__ == '__main__':
+    audit()
+    print()
+    alignment_table()

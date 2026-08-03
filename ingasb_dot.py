@@ -173,7 +173,7 @@ def dash_height_for_volume(length, width, target_volume,
 # --------------------------------------------------------------------------------------
 
 def build(shape, x, h=0.5, pad=6.0, z_pad=None, use_piezo=True, matrix='InAs',
-          vol_tol=0.15, verbose=True):
+          vol_tol=0.15, verbose=True, require_converged=True):
     """Grid, mask, strain, piezoelectric potential and band-edge fields for one configuration.
 
     `x` is the InSb fraction of the In(x)Ga(1-x)Sb dot. `shape` comes from `lens` or `dash`.
@@ -209,7 +209,12 @@ def build(shape, x, h=0.5, pad=6.0, z_pad=None, use_piezo=True, matrix='InAs',
 
     eps_star = ms.misfit(dot, mat)
     t0 = time.time()
-    strain = ef.solve_strain_fd(mask, eps_star, ms.elastic(dot), ms.elastic(mat), h, tol=1e-10)
+    # require_converged is the default and is left on deliberately: an unconverged or
+    # preconditioner-filtered strain field produces band edges that look plausible and are wrong,
+    # and it used to be reported only under verbose -- which is how a whole box-convergence study
+    # got run on two silently broken large grids.
+    strain = ef.solve_strain_fd(mask, eps_star, ms.elastic(dot), ms.elastic(mat), h, tol=1e-10,
+                                require_converged=require_converged)
     t_strain = time.time() - t0
 
     phi = np.zeros(mask.shape)
@@ -238,7 +243,7 @@ def build(shape, x, h=0.5, pad=6.0, z_pad=None, use_piezo=True, matrix='InAs',
         print(f"  misfit {eps_star*100:+.2f}%  ->  <Tr eps> = {tr:+.5f}  "
               f"(exx {g['exx']:+.5f}, eyy {g['eyy']:+.5f}, ezz {g['ezz']:+.5f})")
         print(f"  strain: CG {strain.cg_iterations} iters, rel {strain.cg_residual:.1e}, "
-              f"{t_strain:.1f}s")
+              f"{strain.cg_modes_dropped} mode(s) dropped, {t_strain:.1f}s")
         if use_piezo:
             print(f"  piezo {phi.min()*1e3:+.1f} .. {phi.max()*1e3:+.1f} meV")
         print(f"  E_c: dot {Ec[mask].mean():.3f}, matrix min {Ec[~mask].min():.3f}, "
@@ -653,8 +658,9 @@ def _degenerate_groups(E, tol=1e-5):
     return groups
 
 
-def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6,
-                tol=1e-7, maxiter=3000, degeneracy_tol=1e-5, verbose=True):
+def hole_ladder(env, k=8, probe=24, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6,
+                tol=1e-7, maxiter=3000, degeneracy_tol=1e-5,
+                locate=True, locate_probe=8, locate_maxiter=250, verbose=True):
     """Eight-band hole levels for one environment, by scanning sigma and keeping what localizes.
 
     Sigma placement is the entire problem in this system, and the obvious choice is wrong
@@ -696,11 +702,27 @@ def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6
 
     `k` counts LEVELS, not eigenvalues: each level already has its Kramers partner folded in.
 
-    `maxiter` defaults lower than the benchmark's 8000 on purpose. A sigma that lands in the
-    matrix continuum cannot converge and its states are rejected anyway, so letting it run the
-    full budget is pure cost -- measured, the two continuum sigmas in a six-point scan burned
-    ~75% of the wall clock while the sigmas that found the ladder converged in 400-2400
-    iterations. Raise it if a sigma that DID produce kept levels is reporting a large residual.
+    Two stages, because most of the scan is otherwise wasted
+    -------------------------------------------------------
+    A sigma in the matrix continuum cannot converge -- that is the whole reason the scan exists --
+    so it runs to `maxiter` and everything it returns is then rejected. Measured on the r = 6 nm
+    lens: the two continuum sigmas burned 6002 of 8646 total iterations, 69% of the wall clock,
+    for zero kept levels.
+
+    So `locate=True` runs a cheap first pass at every sigma (`locate_probe` states,
+    `locate_maxiter` iterations) purely to ask "is there anything island-like near here?", and
+    only sigmas that answer yes get the full `probe`/`maxiter` solve. Localization is a much
+    coarser property than an eigenvalue and converges long before one does, which is what makes
+    the cheap pass trustworthy for this question and not for any other -- no energy from a locate
+    pass is ever reported.
+
+    The promotion threshold is deliberately `loc_min / 2`, not `loc_min`: a half-converged vector
+    can understate its own localization, and promoting a borderline sigma costs one extra solve
+    whereas missing one loses a level silently. Set `locate=False` to force the full solve
+    everywhere.
+
+    Coverage is still computed over EVERY sigma, using the locate-pass window for the ones that
+    were skipped. Skipping a sigma must not make the scan look better covered than it is.
 
     Holes are read *downward* from the valence edge, so the most strongly confined hole is the
     HIGHEST energy in the electron convention, and everything is sorted descending.
@@ -722,19 +744,43 @@ def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6
         print(f"  scanning sigma over " +
               ", ".join(f"{s:.3f}" for s in sigmas) + " eV")
 
+    def localization(V):
+        return np.array([float((np.abs(V[:, j].reshape(8, n)) ** 2).sum(axis=0)
+                               .reshape(m.shape)[m].sum() / (np.abs(V[:, j]) ** 2).sum())
+                         for j in range(V.shape[1])])
+
     lv_E, lv_loc, lv_sig, lv_res, lv_deg = [], [], [], [], []
     spans = []
-    n_probed, n_localized = 0, 0
+    n_probed, n_localized, n_iters, n_skipped = 0, 0, 0, 0
     t0 = time.time()
     for sg in sigmas:
+        # ---- stage 1: cheap locate. Only ever asked "is anything island-like near here?" ----
+        if locate:
+            Eq, Vq, infoq = eig.solve_interior(H, k=locate_probe, sigma=float(sg), tol=tol,
+                                               maxiter=locate_maxiter, verbose=False)
+            n_probed += len(Eq)
+            n_iters += infoq['iterations']
+            locq = localization(Vq)
+            promote = bool((locq >= loc_min / 2.0).any())
+            if not promote:
+                # Record what this pass actually looked at, so coverage is not overstated.
+                spans.append((float(sg), float(Eq.min()), float(Eq.max())))
+                n_skipped += 1
+                if verbose:
+                    print(f"    sigma {sg:7.4f}: locate {infoq['iterations']:>4} iters, "
+                          f"max localization {locq.max()*100:4.1f}% -- skipped")
+                del Vq
+                continue
+            del Vq
+
+        # ---- stage 2: the real solve, only where stage 1 saw something ----
         E, V, info = eig.solve_interior(H, k=probe, sigma=float(sg), tol=tol, maxiter=maxiter,
                                         verbose=False)
         spans.append((float(sg), float(E.min()), float(E.max())))
-        loc = np.array([float((np.abs(V[:, j].reshape(8, n)) ** 2).sum(axis=0)
-                              .reshape(m.shape)[m].sum() / (np.abs(V[:, j]) ** 2).sum())
-                        for j in range(V.shape[1])])
+        loc = localization(V)
         res = np.asarray(info['residuals'])
         n_probed += len(E)
+        n_iters += info['iterations']
 
         # Collapse to LEVELS inside this solve, before anything is merged across sigmas.
         #
@@ -757,7 +803,7 @@ def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6
             lv_deg.append(float(np.ptp(E[grp])) if len(grp) > 1 else np.nan)
         if verbose:
             kept = sum(1 for g in deg if loc[g].mean() >= loc_min)
-            print(f"    sigma {sg:7.4f}: {info['iterations']:>5} iters, "
+            print(f"    sigma {sg:7.4f}: solve  {info['iterations']:>4} iters, "
                   f"residual {res.max():.1e} eV, {len(deg):>2} levels, "
                   f"{kept:>2} island-localized")
 
@@ -787,16 +833,22 @@ def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6
     # every other check (sigma_hits not at the bottom of the scan, Kramers at 2e-11 meV,
     # residuals at 2e-7 eV) still passed. Coverage is the check that catches it, so it is
     # computed here rather than left to the caller.
+    # `degeneracy_tol` as the threshold, not zero: two windows that abut to within the tolerance
+    # used to call eigenvalues equal have not left room for a level between them, and reporting
+    # a zero-width "gap" would be crying wolf. Seen in practice as [0.0420, 0.0420].
     spans_sorted = sorted(spans, key=lambda s: -s[0])
     gaps = [(spans_sorted[i][1], spans_sorted[i + 1][2])
             for i in range(len(spans_sorted) - 1)
-            if spans_sorted[i][1] > spans_sorted[i + 1][2]]
+            if spans_sorted[i][1] - spans_sorted[i + 1][2] > degeneracy_tol]
     covered_top = spans_sorted[0][2] if spans_sorted else float('nan')
 
     if verbose:
         print(f"    {len(lv_E)} island-localized levels found across the scan "
               f"({n_localized} states out of {n_probed} probed), {len(keep)} kept after "
-              f"merging, {time.time()-t0:.0f}s")
+              f"merging, {n_iters:,} iterations total, {time.time()-t0:.0f}s")
+        if locate and n_skipped:
+            print(f"    {n_skipped} of {len(sigmas)} sigmas skipped by the locate pass "
+                  f"(continuum); their windows are still counted in the coverage check below")
         if not len(keep):
             print("    NOTHING localized anywhere in the scan. Widen `sigmas` or lower "
                   "`loc_min` -- the ladder is empty for a numerical reason, not a physical one.")
@@ -818,6 +870,7 @@ def hole_ladder(env, k=8, probe=12, loc_min=HOLE_LOC_MIN, sigmas=None, n_sigma=6
                 residual=float(lv_res[keep].max()) if len(keep) else float('nan'),
                 n_probed=int(n_probed), n_localized=int(n_localized),
                 spans=spans, gaps=gaps, covered_top=covered_top,
+                iterations=int(n_iters), n_skipped=int(n_skipped),
                 seconds=float(time.time() - t0))
 
 
@@ -860,6 +913,8 @@ def run_size(shape, x, h=0.75, pad=5.0, k=8, use_piezo=True, matrix='InAs', z_pa
                        spans=[list(s) for s in lad['spans']],
                        gaps=[list(g) for g in lad['gaps']],
                        covered_top=float(lad['covered_top']),
+                       iterations=int(lad['iterations']),
+                       n_skipped=int(lad['n_skipped']),
                        seconds=float(time.time() - t0)))
     if verbose:
         print("    hole levels (eV, most confined first): " +

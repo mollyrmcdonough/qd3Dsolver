@@ -156,7 +156,7 @@ def environment(base, h=1.0, pad=8.0, use_piezo=True, verbose=True):
 def ilu_folded_preconditioner(H, sigma, drop_tol=1e-3, fill_factor=8, verbose=True):
     """M ~ ((H - sigma)^2)^-1, built as two applications of an incomplete LU of (H - sigma).
 
-    LOBPCG requires a positive-definite preconditioner, and (H - sigma)^-1 is not: its
+    requires a positive-definite preconditioner, and (H - sigma)^-1 is not: its
     eigenvalues 1/(lambda - sigma) straddle zero. Applying the same approximate inverse twice
     gives ~(H - sigma)^-2, which is positive definite, and is the right operator for the folded
     problem `eigensolvers.solve_interior` actually solves. Passing the single ILU solve would be

@@ -20,9 +20,13 @@ There is no build step and no package install — modules import each other by b
 **run from the repository root**.
 
 ```bash
+python materials.py                        # the whole parameter table + 4 consistency checks (instant)
 python scripts/elasticity_validation.py    # the elasticity solvers, against analytic ground truth
 python scripts/strain_validation.py        # strain tensor + Bir–Pikus terms
 python scripts/shape_validation.py         # dot/dash geometry vs closed-form volumes (seconds)
+python scripts/insb_band_edges_vs_size.py  # InSb/InAs band edges vs size: scale invariance (~100 min)
+python scripts/insb_pryor_pistol_check.py  # ...and why they miss Pryor & Pistol 2005 (seconds)
+python scripts/insb_box_convergence.py     # periodic-box convergence of the dot gap (~25 min)
 python scripts/pryor_fig2.py               # reproduce Pryor's Fig. 2 (homogeneous elasticity)
 python pryor_fig4.py                       # bound-state energies vs island size (Fig. 4)
 python pryor_fig6.py                       # ground-state exciton wave functions (Fig. 6)
@@ -118,10 +122,97 @@ while the truth is −0.1068. Measured against Pryor's quoted conduction-well de
 Use `strain_fourier` when the constants really are uniform, as an independent check (the two agree
 in that limit), and for speed.
 
+#### A preconditioner cutoff that made the strain error grow with resolution
+
+`elasticity_fd` preconditions CG with the exact inverse of the *homogeneous* symbol S(k), skipping
+wavevectors where S is singular. Only k = 0 is — rigid translation costs no energy — and the test
+for it used to be
+
+```python
+good = np.abs(det) > 1e-10 * np.abs(det).max()      # WRONG: a magnitude test, not a rank test
+```
+
+S vanishes as |k|² at small k, so det S ~ |k|⁶. On a grid whose longest side is N the smallest
+nonzero wavevector 2π/N therefore has det/det_max falling off roughly as N⁻⁶, and it crosses the
+fixed `1e-10` floor near N ≈ 150. Past that the test starts discarding a shell of long-wavelength
+modes that are **perfectly well conditioned and merely small**, as the physics requires them to be
+— and discards a wider shell the finer the grid. Measured, over the grids this repo actually ran:
+
+| grid | sites | smallest legitimate det ratio | modes dropped |
+|---|---|---|---|
+| 70×70×40 | 0.20M | 8.2e-09 | 1 ✓ |
+| 88×88×50 | 0.39M | 2.1e-09 | 1 ✓ |
+| 116×116×67 | 0.90M | 3.9e-10 | 1 ✓ |
+| 120×120×83 | 1.20M | 3.2e-10 | 1 ✓ |
+| 140×140×103 | 2.02M | **1.3e-10** | 1 ✓ (by a factor of 1.3) |
+| 158×158×91 | 2.27M | 5.7e-11 | **5** ✗ |
+| 160×160×110 | 2.82M | 6.2e-11 | **5** ✗ |
+
+Those are exactly the modes carrying an inclusion's long-range relaxation. Zeroing them makes the
+preconditioner a **low-pass filter**, and CG cannot recover what the preconditioner never admits to
+the Krylov space — so the residual still reports convergence, because it is measured in the
+filtered space.
+
+The failure signature is worth remembering, because none of it looks like a linear-algebra bug:
+
+- one run returned a conduction edge at **−12.25 eV** and a negative gap;
+- another returned a *plausible* gap while making ⟨Tr ε⟩ 4×10⁻³ **more** compressive as the grid
+  refined at fixed box — impossible, since a better-resolved box relaxes more, not less;
+- both were **slow**, which read as "big grid." In fact filtering left CG grinding unpreconditioned
+  to its `maxiter=500` cap: 6125 s / 500 iters ≈ 12 s per iteration, against 109 s / 8 iters ≈ 13.6
+  s per iteration on the 2.02M-site grid that *was* fine. Same cost per iteration, 60× the count.
+
+So the iteration cap was a symptom, not the cause — and `build` reported the residual only under
+`verbose=True`, so an entire box-convergence study ran on two silently broken grids.
+
+Three changes, in decreasing order of importance:
+
+1. **`_nonsingular`** tests `det` against `(tr/3)³`. Both scale as the cube of the block's own
+   magnitude, so the ratio is O(1) for any well-conditioned block however small, making it a
+   statement about *conditioning*. k = 0 is excluded separately on magnitude, which is the property
+   it actually lacks.
+2. **`require_converged=True`** on `solve_strain_fd`, which raises on a missed tolerance, a CG
+   breakdown, or any mode dropped beyond k = 0. An unconverged strain field is not a slightly worse
+   answer, it is a wrong one, and it propagates silently into every band edge downstream.
+3. **`_pcg` distinguishes breakdown from slow convergence.** Non-positive `p·Ap` or `r·Mr` now
+   reports a reason instead of breaking out of the loop and returning whatever the last step left
+   in `U`.
+
+`scripts/elasticity_preconditioner_check.py` reproduces the table above (`--diagnose`, seconds, no
+solve), confirms the fix is invisible where the old test was safe, and re-runs both broken points.
+
+### Materials
+
+`materials.py` is the **single source of material data**. GaAs, InAs, GaSb and InSb, plus the
+In*ₓ*Ga₁₋ₓSb and InAs₁₋ₓSb*ₓ* alloys, all transcribed from `bandparameters_vurgaftman2001.xlsx`
+and `bowingparameters_vurgaftman_2001.xlsx` — the band-parameter and bowing tables of Vurgaftman,
+Meyer and Ram-Mohan, *J. Appl. Phys.* **89**, 5815 (2001). Every value carries a `PROVENANCE`
+tag; `python materials.py` prints the whole table plus four consistency checks.
+
+Three things worth knowing before using it:
+
+- **Sign convention.** Vurgaftman's, in which `a_v` is *negative* for all four binaries and the
+  gap deformation potential is the **sum**, `a_gap = a_c + a_v`. This is not the commoner Van de
+  Walle tabulation. `qdsolver_core.MATERIALS` is in that other convention and is deliberately
+  **not** migrated, because the validated Pryor InAs/GaAs reproductions read it — converting is
+  exactly `a_v → −a_v`, and mixing them unnoticed is a ~100 meV error that looks plausible.
+- **Temperature.** `set_temperature(T)` moves the gaps (Varshni) *and* the lattice constants, and
+  the lattice constants are the only thing setting the misfit. Default 0 K, which is what the
+  rest of the set is — the Kane expression reproduces all four tabulated band-edge masses to the
+  digit at 0 K and is 24% out on InSb at 300 K.
+- **`e14` and `ε_r` are additions to the workbook**, not from the review's own tables, and
+  `e14`'s sign is opposite to `pryor1998.PRYOR_TABLE_I`. A global flip reverses the piezoelectric
+  potential everywhere; it changes nothing computed with `use_piezo=False`. The Pryor fixture
+  keeps its published values, so the two deliberately disagree.
+
+`materials_sb.py` is now a thin antimonide layer over it — the narrative for the InAs/In*ₓ*Ga₁₋ₓSb
+system, the legacy switches, and `SB_MATERIALS` aliased to `materials.MATERIALS`. New code should
+import `materials` directly.
+
 ### The antimonide system (InAs / In*ₓ*Ga₁₋ₓSb)
 | Module | Contents |
 |---|---|
-| `materials_sb.py` | InAs, GaSb, InSb on one consistent unit system, In*ₓ*Ga₁₋ₓSb alloy interpolation, absolute-VBO band alignment, and a `PROVENANCE` tag on every value. `audit()` prints the lot. |
+| `materials_sb.py` | The InAs/In*ₓ*Ga₁₋ₓSb narrative layer over `materials.py`: `ingasb(x)`, the alignment table, the legacy switches, and the record of the three parameter errors. Holds no numbers of its own. |
 | `ingasb_dot.py` | Shapes, environment build, band landscape, the strain-pocket binding criterion, single-band electron states, the eight-band opt-in, and the size sweep of eight-band hole levels (`hole_size_sweep`, checkpointed to JSON) with its two figures. |
 
 This system is **broken gap**: the In*ₓ*Ga₁₋ₓSb valence edge lies above the InAs conduction edge at
@@ -134,6 +225,114 @@ V₀R² > π²ħ²/8m ≈ 3.78 eV·nm², and the pocket reaches at most 2.45 eve
 x = 1. So the electron here is Coulomb-bound to the hole, and any "electron binding energy" from a
 single-particle solve in a finite box is measuring the box.
 
+### The antimonide parameter set had three errors, and the benchmark now passes
+
+This system has a published calculation to check against — C. E. Pryor and M.-E. Pistol,
+*Phys. Rev. B* **72**, 205311 (2005), whose Table I (wells) and Table III (dots) both cover
+InSb on InAs. Reproduce with `python scripts/insb_pryor_pistol_check.py`; full parameter audit
+sheet via `python scripts/dump_sb_parameters.py > SB_PARAMETERS.md`.
+
+| | our gap | their gap | error |
+|---|---|---|---|
+| pseudomorphic well (analytic) | 0.394 | 0.394 | **0 meV** |
+| dot, spherical cap h/d = ¼, **box-converged** | 0.644 | 0.673 | **−29 meV** |
+
+Both absolute well edges land exactly too: CB 0.645, VB 0.251 on their scale. The well is the
+load-bearing benchmark: closed-form biaxial strain, no elasticity solve, no shape, no grid, no
+box. Nothing numerical can flatter it.
+
+**The dot number is box-dependent, and an earlier version of this README quoted +2 meV for it.**
+That was `h = 0.5, pad = 7.5` — one point on a curve that had not been converged. `elasticity_fd`
+is periodic, so a tight box lets the island feel its own images, which resist relaxation, overstate
+|Tr ε| and overstate the strain-opened gap. Running the padding out to 30 nm
+(`scripts/insb_box_convergence.py`, now affordable — see the preconditioner section above):
+
+| pad (nm) | lateral fill | vertical fill | ⟨Tr ε⟩ | gap | vs P&P |
+|---|---|---|---|---|---|
+| 5 | 68% | 32% | −0.08487 | 0.6994 | +26 meV |
+| 7.5 | 57% | 24% | −0.08188 | 0.6684 | −5 meV |
+| 10 | 50% | 19% | −0.08082 | 0.6574 | −16 meV |
+| 14 | 42% | 14% | −0.08005 | 0.6503 | −23 meV |
+| 18 | 36% | 12% | −0.07970 | 0.6473 | −26 meV |
+| 24 | 29% | 9% | −0.07944 | 0.6453 | −28 meV |
+| 30 | 25% | 7% | −0.07932 | 0.6444 | **−29 meV** |
+
+Successive steps are −31.0, −11.0, −7.1, −3.0, −2.0, **−0.9 meV**: converged. Repeating at
+`h = 0.3` gives a constant **−2.8 meV** resolution offset at both pad 14 and pad 18, so this is the
+box and not staircasing of the curved cap.
+
+**The box is converged; the resolution is not.** At fixed `pad = 3R` the gap is 0.6489 at
+`h = 0.5`, 0.6444 at `h = 0.4`, and the `h = 0.3` runs sit −2.8 meV below their `h = 0.4`
+counterparts. Refinement is still moving the answer downward by a few meV per step, so **−29 meV
+is a lower bound on the disagreement, not a converged value** — the `h → 0` limit is further from
+Pryor & Pistol, not closer. Quote the residual as −24 meV at `h = 0.5`, −29 meV at `h = 0.4`, and
+say which.
+
+Two things follow, and the second is the more useful one:
+
+1. **The box was not the explanation.** Enlarging it moves *away* from their value. The residual
+   disagreement is real and lives in the shape or the 3D strain field, not in the parameter set —
+   which the analytic well already certifies at 0 meV.
+2. **Our curve crosses their value at just under 60% fill.** Pryor's 1997 grid states 50%/17% fill
+   (130×130×120 sites, island in 65×65×20), which is the pad = 10 row at −16 meV. So the former
+   +2 meV was largely the bias of a box slightly tighter than his; matching his stated fill roughly
+   halves the discrepancy without closing it.
+
+Any dot band edge quoted at pad ≤ 7.5 nm is biased high by at least 24 meV. The well is not.
+
+*(This table is `box_conv3.log`, regenerated after the lattice constant became temperature
+dependent. Every row moved down by a uniform ~1.5 meV — a 0 K lattice gives a 0.4% smaller misfit
+than the 300 K one used before. The convergence behaviour and both conclusions are unchanged.)*
+
+**How the errors were found.** The well is closed-form biaxial strain — no elasticity solve, no
+shape, no grid — so having it disagree while the dot disagreed *by exactly the same amount scaled
+by the strain ratio* (92 × 0.08269/0.05908 = 129 meV, to under a meV) proved the fault was a
+coefficient multiplying Tr(ε), not anything geometric. Back-solving the well for the required
+hydrostatic gap deformation potential gave `a_gap(InSb) = −7.29 eV` against the database's −5.73.
+Vurgaftman's own table gives **−7.30**. That 10 meV agreement is what pinned it.
+
+**Three errors in `aestimo/database.py`, all corrected from the review's own tables**
+(`bandparameters_vurgaftman2001.xlsx` in the repo root, now the sole source for `materials.py`;
+nothing in the package reads the database any more):
+
+1. **`a_v` sign, for InAs and InSb.** The review is explicit that its `a_v` is negative and that
+   `a_gap = a_c + a_v` — *"This implies a negative value for a = a_c + a_v. Note that our sign
+   convention for a_v is different from many other works found in the literature."* The database
+   has InAs **+1.00** and InSb **+0.31** against the review's −1.00 and −0.36, which makes the
+   valence band move the wrong way under compression. GaSb's −1.32 had the right sign and the
+   wrong magnitude (−0.80). This **inverts the module's former diagnosis**: GaSb was the *correct*
+   entry, and `GASB_AV_CONVENTION='signfixed'` made things worse. That switch is now deprecated.
+2. **`a_c` for InSb and GaSb**: −6.04 → **−6.94** (a transposed digit, most likely) and
+   −9.33 → **−7.50**.
+3. **The gaps were ~300 K while everything else was 0 K.** The *derived* electron mass settles
+   this independently: at 0 K it gives 0.0260 / 0.0390 / 0.0135, reproducing the review's own
+   tabulated masses to the digit, where the 300 K gaps give 0.0102 for InSb — 24% out. `Ep` and
+   `F` are 0 K quantities. The module now initializes to `set_gap_source('varshni', T=0)`.
+
+Also corrected from the same source: InAs `delta_so`, the InAs Luttingers, GaSb `C44`, the InAs
+`VBO` by 10 meV, and `d` for GaSb and InSb — which were tagged `UNVERIFIED` and now are not.
+
+Resulting `a_gap = a_c + a_v` (the convention-independent number): InAs **−6.08**, GaSb **−8.30**,
+InSb **−7.30**. Pryor's independently-transcribed 1998 Table I gives InAs −6.00.
+
+**What moved.** For the InSb lens in InAs: hole well 888 → **816 meV**, island valence edge above
+the matrix maximum 581 → **514 meV**, strained broken-gap overlap 488 → **399 meV**, unstrained
+overlap 180 → **173 meV**. The electron pocket is unchanged at 184 meV and **still does not
+bind** — V₀R² reaches 0.57 against a threshold of 3.61 eV·nm² — so that conclusion survives.
+
+
+Band edges themselves are **size-independent** — Pryor & Pistol's scale-invariance argument,
+verified to 0.0 meV over a 4× size range by `scripts/insb_band_edges_vs_size.py` when the grid
+*and* box are scaled with the island. With them held fixed the same sweep shows a spurious
+**50.2 meV** drift, driven by the island filling 40% → 73% of the periodic box. Size enters the
+physics only through confinement energy, not through the band edges.
+
+The scaled test is exact rather than approximate, which is worth knowing when reading it: with
+`h = R/20` and `pad = 3R`, the grid is 8R/(R/20) = **160 × 160 × 130 at every R**, so each size is
+literally the same discrete problem. Every column agrees to the printed digit — same 6,872 island
+cells, same volume error, same ⟨Tr ε⟩ = −0.07976, same edges — and the 0.0 meV spread is bit
+equality, not cancellation.
+
 **x = 1 is InSb**, and `insb_lens_inas.ipynb` takes that end of the range on its own terms: an
 InSb lens in InAs, put through Pryor's Figs. 2 and 4 rather than through the composition sweep.
 Misfit −6.50% (against −6.69% for InAs/GaAs, so linear elasticity is pushed just as hard),
@@ -144,18 +343,17 @@ eight-band hole ladder, ports directly. **Fig. 6 is deliberately not ported**: i
 electron–hole pair, and here the Hartree loop would be doing the binding rather than correcting
 it, on top of a σ-targeting problem that is genuinely unsolved in a broken-gap spectrum.
 
-**Two defects in the source data** (`aestimo/database.py`), corrected in `materials_sb.py` but not
-silently — `audit()` re-derives both:
+**The source data is no longer aestimo's `database.py`.** `materials.py` is transcribed from the
+Vurgaftman workbooks directly, which removed the two defects that file had — the 10× unit
+inconsistency in `C11`/`C12`, and the `a_v` signs (see the three errors above; the diagnosis the
+old `GASB_AV_CONVENTION` switch was built on turned out to be **inverted**, and the switch is
+deprecated). Nothing here imports `aestimo_database.py`.
 
-1. *Units.* InAs `C11 = 8.329` (10¹¹ dyne/cm²) sits beside GaSb `88.42` and InSb `68.47` (GPa).
-   aestimo scales all three identically, so it reads GaSb and InSb **10× too stiff**.
-2. *A sign.* `a_v` is +1.00 (InAs) and +0.31 (InSb) but **−1.32** (GaSb), which would make GaSb's
-   valence band move the opposite way under compression from InAs's. `GASB_AV_CONVENTION` switches
-   between the stored value, a sign fix, and an unverified literature magnitude. It sets the hole
-   well depth, so it matters.
-
-Also, `database.py` lists InAs `m_e = 0.4` (10× off), so masses are **derived** from the Kane
-expression instead: 0.025 / 0.035 / 0.010 against accepted 0.026 / 0.039 / 0.0135.
+Masses are still **derived** from the Kane expression rather than tabulated, because that database
+listed InAs `m_e = 0.4`, an order of magnitude off. With the corrected 0 K parameter set the
+derived values now reproduce the review's own tabulated masses to the digit for all four binaries
+— which is a joint check on `Eg`, `Δ_so`, `E_P` and `F` at once, and the sharpest evidence the set
+is self-consistent. `materials.audit()` prints it.
 
 ### k·p and fields
 | Module | Contents |
@@ -179,10 +377,12 @@ Both are imported by `pryor_inhomogeneous.ipynb`, hence their place at the root.
 ## Two conventions that will bite you
 
 **1. Pryor's `a_v` sign is not Van de Walle's.** Pryor's Table I satisfies `a_g = a_v + a_c`, so
-his valence edge shifts by **−a_v·Tr(ε)**. The commoner convention (and the rest of this
-package's `MATERIALS` dict) has `a_g = a_c − a_v` and shifts by **+a_v·Tr(ε)**.
-`pryor1998.band_edge_fields` implements *Pryor's*. Mixing them moves the valence band the wrong
-way and inflates the strained gap by ~150 meV.
+his valence edge shifts by **−a_v·Tr(ε)**. Vurgaftman et al. use the same convention and say so
+explicitly, so **`materials.py` and `pryor1998.py` agree**: `a_v` negative, gap potential the sum.
+The commoner Van de Walle convention has `a_g = a_c − a_v`, quotes `a_v` positive, and shifts by
+**+a_v·Tr(ε)** — that is what `qdsolver_core.MATERIALS` carries, and it is kept that way because
+the validated Pryor InAs/GaAs reproductions read it. Converting is exactly `a_v → −a_v`. Mixing
+them moves the valence band the wrong way and inflates the strained gap by ~150 meV.
 
 **2. Hydrostatic strain is easy to count twice.** `band_edge_fields` returns band edges that
 *already* carry `a_c·Tr(ε)` and `−a_v·Tr(ε)`. Passing those to a Hamiltonian builder with
@@ -243,12 +443,13 @@ once. Three traps it also handles, all of which bit during development:
 
 | Status | Files |
 |---|---|
-| **Current** | `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_fig4`, `pryor_fig6`, `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
+| **Current** | `materials`, `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_fig4`, `pryor_fig6`, `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
 | **Superseded, still correct** | `qdsolver_core.trace_strain_from_mask` — hydrostatic-only *and* returns constrained rather than elastic strain, overstating the band-edge shift by 1.165×. Kept only so older notebooks still run. |
 | **Known wrong — do not use** | `kp_luttinger.py` and `kp_confined.build_confined_luttinger_kohn` — the split-off band is on the wrong side of the diagonal and the R/S off-diagonals are misplaced. Both carry docstrings saying so. |
 | **Suspect results** | `pryor_benchmark.ipynb` and `multiband_bulk_validation.ipynb` import `kp_luttinger`; their **multiband** numbers predate the matrix fix. Their single-band content is unaffected. |
-| **Current, but unbenchmarked** | `materials_sb`, `ingasb_dot`, `ingasb_lens.ipynb`, `ingasb_dash.ipynb`, `insb_lens_inas.ipynb`. The *machinery* is the validated Pryor machinery; the *parameter set* has no published calculation to check against, and four entries are tagged `UNVERIFIED`. Vary them before quoting anything. |
-| **Unaudited** | `aestimo_database.py` — has a 10× units inconsistency in C11/C12 (GaAs/InAs in 10¹¹ dyne/cm², InSb/GaSb in GPa). Nothing here imports it. `qdsolver_core.MATERIALS` is the correct source. |
+| **Current, and now benchmarked** | `materials`, `materials_sb`, `ingasb_dot`, `ingasb_lens.ipynb`, `ingasb_dash.ipynb`, `insb_lens_inas.ipynb`. Parameters reproduce Pryor & Pistol 2005's InSb/InAs pseudomorphic well to **0 meV** on both edges — closed form, so nothing numerical flatters it. The **dot** gap converges to **−29 meV** against their Table III once the periodic box is enlarged to 25% fill; a former "+2 meV" claim here was one unconverged point at 57% fill, near where our curve happens to cross theirs. Getting this far required correcting three errors in the source database (see "The antimonide parameter set had three errors" below; results from before that are wrong by ~130 meV) and one preconditioner bug in `elasticity_fd` (see "A preconditioner cutoff that made the strain error grow with resolution"). **The residual dot disagreement is unexplained and is not the parameter set.** |
+| **Retained in the other sign convention** | `qdsolver_core.MATERIALS` — Van de Walle (`Av` positive), read by the validated Pryor InAs/GaAs reproductions. Correct as it stands; deliberately not migrated. Use `materials.py` for anything new, and never mix the two. |
+| **Unaudited — do not use** | `aestimo_database.py` — has a 10× units inconsistency in C11/C12 (GaAs/InAs in 10¹¹ dyne/cm², InSb/GaSb in GPa). Nothing here imports it, and nothing should: `materials.py` supersedes it, transcribed from the review's own tables rather than a copy of them. |
 
 `archive/` holds artifacts whose numbers are known to be wrong; see `archive/README.md`.
 

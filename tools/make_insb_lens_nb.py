@@ -133,7 +133,9 @@ shape = ig.lens(RADIUS, HEIGHT)
 # grid point, so it can afford to be fine. The size sweep is an eight-band folded-spectrum
 # solve at 8 unknowns per point and cannot.
 H_FIELD, PAD_FIELD = 0.5, 6.0
-H_SWEEP, PAD_SWEEP = 0.75, 5.0
+H_SWEEP, PAD_SWEEP = 0.75, 3.5   # the hole sits in an ~890 meV well and is tightly localized,
+                                 # so it does not need the large box the (unbound) electron did
+                                 # -- 3.5 nm of matrix costs ~35% fewer unknowns than 5.0 nm
 K_SWEEP = 4                     # LEVELS kept per size (each already a Kramers pair), which is
                                 # Pryor's own cut-off: "only the first four states"
 
@@ -147,7 +149,7 @@ PROBE   = 24                    # states requested at each sigma. Well above the
                                 # levels fell into one. Whether 24 is enough on your grids is
                                 # not assumed -- the coverage check reports it per size.
 
-RADII  = (6.0, 8.0, 10.0, 12.0)           # base radius, nm
+RADII  = (6.0, 8.0, 10.0, 12.0, 14.0, 16.0)   # base radius, nm
 ASPECT = HEIGHT / (2 * RADIUS)            # h/d, held fixed so the sweep is size, not shape
 lens_of = lambda r: ig.lens(r, 2 * r * ASPECT)
 
@@ -462,16 +464,31 @@ So what is swept in place of panel (a) is $V_0R^2$ against that threshold.""")
 
 md(r"""### First: what the sweep will cost
 
-Printed before it runs, and worth reading, because **this is a multi-hour cell**. The hole solve
-scans $\sigma$ (see below for why it has to), so the cost is `N_SIGMA` folded-spectrum solves per
-island size, not one. The anchor measurement: a 2 560-unknown problem took 62 s for a 5-point
-scan. The grids below are 40–130× that, and iteration counts do not fall with size, so budget
-hours rather than minutes and let the checkpoint file do its job — `hole_size_sweep` writes
-`insb_lens_levels.json` after **every** size, so an interrupted run resumes where it stopped.
+Printed before it runs, and worth reading, because **this is a many-hour cell**. Measured on this
+machine rather than guessed:
 
-Trim `RADII` first if that is too much; it is the linear knob. Dropping `N_SIGMA` is the
-tempting second one and is the riskier of the two, because a scan too coarse to bracket the
-ladder returns an empty result that looks like a physical statement.
+* the folded LOBPCG iteration costs **1.07 × 10⁻⁵ s per unknown** — 1.194 s/iter at 112 896
+  unknowns and 2.783 s/iter at 256 000, i.e. linear in problem size to within 3%;
+* a full two-stage $\sigma$ scan takes **≈ 3 900 iterations**, verified at the small test size.
+
+Multiply those together against the unknown counts below and the six sizes come to roughly
+**15–18 hours**. `hole_size_sweep` writes `insb_lens_levels.json` after **every** size, so an
+interrupted run resumes where it stopped and the small islands land within the first couple of
+hours — there is no need to wait for the whole thing before looking at anything.
+
+That figure is already after two optimizations, both of which matter more than trimming sizes:
+
+1. **The two-stage $\sigma$ locate** (see below). Without it the same sweep is ~50 hours, because
+   $\sigma$ values landing in the matrix continuum run to `maxiter` and everything they return is
+   then discarded — 69% of all iterations, measured.
+2. **`PAD_SWEEP = 3.5` rather than 5.0 nm**, which is 32% fewer unknowns. Justified specifically
+   for the hole: it sits in an ~890 meV well and is tightly localized, so it does not need the
+   large box the *unbound* electron genuinely did in the section above. Do not carry this
+   padding back to an electron calculation.
+
+If it is still too much, trim `RADII` — it is the linear knob and costs only x-axis range.
+Dropping `N_SIGMA` is the tempting alternative and is the riskier one, because a scan too coarse
+to bracket the ladder returns an empty result that looks like a physical statement.
 
 The z-cells column is the other thing to check. At $h/d = 1/4$ the smallest island in `RADII` is
 the thinnest object in the sweep, and a level quoted from three or four cells of vertical
@@ -588,11 +605,35 @@ So the scan reports its window spans and warns on any uncovered gap. **Read that
 reading the levels.** The fix is a larger `PROBE` (wider windows) rather than more $\sigma$
 points, and it is cheap — the extra eigenvalues come from the same factorisation-free iteration.
 
-Two more consequences worth stating plainly. The scan costs `N_SIGMA` solves per island size
-rather than one, and the $\sigma$ values that land in the continuum will not converge — expected,
-not a fault, so residuals are tracked **per kept level** rather than as a maximum over the scan.
-`sigma_hits` is still recorded and still worth a glance: if the top level came from the lowest
-$\sigma$ in the scan, the scan did not bracket the ladder from below either.
+Residuals are tracked **per kept level** rather than as a maximum over the scan, because the
+$\sigma$ values landing in the continuum do not converge and never will — that is expected, not a
+fault, and letting one of them set the reported residual would flag a failure that happened to
+nothing we returned. `sigma_hits` is still recorded and still worth a glance: if the top level
+came from the lowest $\sigma$ in the scan, the scan did not bracket the ladder from below either.
+
+#### Two stages, because most of the scan is otherwise wasted
+
+Those non-converging $\sigma$ values are not a small overhead. Measured at $r = 6$ nm, the two
+continuum $\sigma$s burned **6 002 of 8 646 iterations — 69% of the wall clock — for zero kept
+levels**.
+
+So `hole_ladder` runs a cheap first pass at every $\sigma$ (`locate_probe = 8` states,
+`locate_maxiter = 250` iterations) that asks one question only: *is there anything island-like
+near here?* Only $\sigma$s that answer yes get the full `PROBE`/`maxiter` solve. This is
+trustworthy for that question and no other — localization is a far coarser property than an
+eigenvalue and converges long before one does — so **no energy from a locate pass is ever
+reported**.
+
+The promotion threshold is `HOLE_LOC_MIN / 2`, not `HOLE_LOC_MIN`, deliberately: a half-converged
+vector can understate its own localization, and promoting a borderline $\sigma$ costs one extra
+solve whereas missing one loses a level silently. Coverage is still computed over *every*
+$\sigma$, using the locate window for the skipped ones — skipping must not make the scan look
+better covered than it is.
+
+Verified against the dense diagonalization at the small test size: identical levels
+(0.4389, 0.4338, 0.3789, 0.3738 eV) in 3 891 iterations and 114 s, against 8 646 and 330 s with
+`locate=False`. Same answer, 2.9× less wall clock. Set `locate=False` to force the full solve
+everywhere.
 
 **Kramers pairing remains a free correctness check.** Time reversal makes every eigenvalue exactly
 twofold degenerate, so one physical level is a *pair*; the largest within-pair splitting has to

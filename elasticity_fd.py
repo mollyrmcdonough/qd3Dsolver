@@ -85,9 +85,14 @@ class FDStrainTensor(StrainTensor):
     StrainTensor uses __slots__, so the convergence data cannot simply be attached to an
     instance -- and it should not be silently dropped either: unlike the Fourier solve, this one
     can fail to converge, and the caller needs to be able to see that it did not.
+
+    `cg_converged` is the single field a caller should branch on. `cg_modes_dropped` is how many
+    wavevectors the preconditioner had to leave uninverted; anything other than 1 (the k = 0
+    rigid translation) means the preconditioner is filtering the solution and the field is
+    suspect however small the residual looks -- see `_nonsingular`.
     """
 
-    __slots__ = ('cg_iterations', 'cg_residual')
+    __slots__ = ('cg_iterations', 'cg_residual', 'cg_converged', 'cg_modes_dropped')
 
 
 def _shape_derivatives(h):
@@ -148,6 +153,61 @@ def _roll(a, shift, axes=(-3, -2, -1)):
     return np.roll(a, shift, axis=axes)
 
 
+def _symbol(K, n):
+    """The homogeneous operator's Fourier symbol S(k), shape (3, 3, Nx, Ny, Nz).
+
+    S(k)_jl = sum_{a,b} K[a,b,j,l] exp(i k.(b - a)), the exact Fourier transform of the
+    constant-coefficient stencil. Hermitian and positive semi-definite for a stable material.
+    """
+    kx = 2 * np.pi * np.fft.fftfreq(n[0])
+    ky = 2 * np.pi * np.fft.fftfreq(n[1])
+    kz = 2 * np.pi * np.fft.fftfreq(n[2])
+    KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
+
+    S = np.zeros((3, 3) + tuple(n), dtype=complex)
+    for a in range(8):
+        for b in range(8):
+            d = CORNERS[b] - CORNERS[a]
+            ph = np.exp(1j * (d[0] * KX + d[1] * KY + d[2] * KZ))
+            for j in range(3):
+                for l in range(3):
+                    if K[a, b, j, l] != 0.0:
+                        S[j, l] += K[a, b, j, l] * ph
+    return S
+
+
+def _nonsingular(M, cond_tol=1e-9, scale_tol=1e-12):
+    """Which wavevectors of a Hermitian PSD symbol may be inverted. M is (..., 3, 3).
+
+    Only k = 0 is genuinely singular -- a rigid translation costs no energy, which is the
+    statement sum_{a,b} K[a,b] = 0, so S(0) = 0 exactly. The test for that has to be SCALE FREE,
+    and this is where an earlier version of this function was wrong in a way that only showed up
+    on large grids.
+
+    Because S vanishes as |k|^2 at small k, det S ~ |k|^6. On a grid of N points per side the
+    smallest nonzero wavevector is 2 pi / N, so
+
+        det_min / det_max  ~  (2 / N)^6
+
+    which is 5e-10 at N = 70 but 4e-12 at N = 158. Comparing det against a fixed fraction of its
+    own global maximum -- the old `|det| > 1e-10 * |det|.max()` -- therefore starts discarding
+    long-wavelength modes once the grid passes N ~ 100, and discards a wider shell of them the
+    finer the grid gets. Those modes are perfectly well conditioned; they are merely small, as
+    the physics says they must be. Zeroing them turns the preconditioner into a low-pass filter,
+    and CG cannot restore what the preconditioner never lets into the Krylov space. The result is
+    a WRONG STRAIN FIELD whose error grows with resolution, reported with a converged residual.
+
+    The scale-free measure is det against (tr/3)^3: both scale as the cube of the block's own
+    magnitude, so their ratio is O(1) for any well-conditioned block however small it is, and the
+    test becomes a statement about conditioning rather than about magnitude. k = 0 is excluded
+    separately, on magnitude, which is the property it actually lacks.
+    """
+    tr = np.trace(M, axis1=-2, axis2=-1).real / 3.0
+    det = np.abs(np.linalg.det(M))
+    scale = np.maximum(tr, 0.0)
+    return (tr > scale_tol * tr.max()) & (det > cond_tol * scale ** 3)
+
+
 class _Operator:
     """Matrix-free action of the assembled stiffness, and its homogeneous-symbol preconditioner.
 
@@ -172,29 +232,13 @@ class _Operator:
         self._symbol_inverse(K_mat + f * self.dK)
 
     def _symbol_inverse(self, K):
-        n = self.shape
-        kx = 2 * np.pi * np.fft.fftfreq(n[0])
-        ky = 2 * np.pi * np.fft.fftfreq(n[1])
-        kz = 2 * np.pi * np.fft.fftfreq(n[2])
-        KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
-
-        S = np.zeros((3, 3) + n, dtype=complex)
-        for a in range(8):
-            for b in range(8):
-                d = CORNERS[b] - CORNERS[a]
-                ph = np.exp(1j * (d[0] * KX + d[1] * KY + d[2] * KZ))
-                for j in range(3):
-                    for l in range(3):
-                        if K[a, b, j, l] != 0.0:
-                            S[j, l] += K[a, b, j, l] * ph
-
-        # Invert the 3x3 symbol at every wavevector; k = 0 is singular (rigid translation).
-        M = np.moveaxis(S, [0, 1], [-2, -1])
-        det = np.linalg.det(M)
-        good = np.abs(det) > 1e-10 * np.abs(det).max()
+        S = _symbol(K, self.shape)
+        M = np.moveaxis(S, [0, 1], [-2, -1])                  # (Nx, Ny, Nz, 3, 3), Hermitian PSD
+        good = _nonsingular(M)
         inv = np.zeros_like(M)
         inv[good] = np.linalg.inv(M[good])
         self.Sinv = np.moveaxis(inv, [-2, -1], [0, 1])
+        self.modes_dropped = int(good.size - good.sum())
 
     def apply(self, U):
         """U, and the result, have shape (3, Nx, Ny, Nz) on nodes.
@@ -228,8 +272,8 @@ class _Operator:
         return np.fft.ifftn(Uk, axes=(-3, -2, -1)).real
 
 
-def solve_strain_fd(inside_mask, eps_star, C_dot, C_matrix, h, tol=1e-10, maxiter=500,
-                    verbose=False, return_total=False):
+def solve_strain_fd(inside_mask, eps_star, C_dot, C_matrix, h, tol=1e-10, maxiter=2000,
+                    verbose=False, return_total=False, require_converged=True):
     """Elastic strain tensor for an inclusion with its OWN elastic constants.
 
     Drop-in counterpart to strain_fourier.solve_strain, with the same sign conventions and the
@@ -246,10 +290,21 @@ def solve_strain_fd(inside_mask, eps_star, C_dot, C_matrix, h, tol=1e-10, maxite
         Cubic elastic constants of inclusion and matrix, in any consistent unit.
     h : float
         Grid spacing (nm).
+    require_converged : bool
+        Raise if the CG did not reach `tol`, or if the preconditioner had to drop any wavevector
+        beyond k = 0. Default True, because an unconverged or filtered strain field is not a
+        slightly worse answer -- it is a wrong one, and it propagates silently into every band
+        edge computed from it. Pass False only to inspect a failure.
 
     Returns
     -------
     StrainTensor (elastic), or (elastic, total) if return_total. Same shape as inside_mask.
+    Carries cg_iterations, cg_residual, cg_converged, cg_modes_dropped.
+
+    Raises
+    ------
+    RuntimeError
+        If require_converged and the solve did not converge cleanly.
     """
     chi = np.ascontiguousarray(inside_mask, dtype=float)
     eps_T = -float(eps_star)
@@ -267,7 +322,23 @@ def solve_strain_fd(inside_mask, eps_star, C_dot, C_matrix, h, tol=1e-10, maxite
             if W_d[a, j]:
                 F[j] += W_d[a, j] * _roll(bulk, tuple(CORNERS[a]))
 
-    U, iters, rel = _pcg(op, F, tol=tol, maxiter=maxiter, verbose=verbose)
+    U, iters, rel, breakdown = _pcg(op, F, tol=tol, maxiter=maxiter, verbose=verbose)
+    converged = (rel < tol) and not breakdown and op.modes_dropped <= 1
+
+    if require_converged and not converged:
+        why = []
+        if breakdown:
+            why.append(f"CG broke down at iteration {iters} ({breakdown})")
+        if rel >= tol:
+            why.append(f"residual {rel:.2e} did not reach tol {tol:.0e} in {iters} iterations")
+        if op.modes_dropped > 1:
+            why.append(f"preconditioner dropped {op.modes_dropped} wavevectors (only k = 0, "
+                       f"i.e. 1, is legitimate) -- it is filtering the solution")
+        raise RuntimeError(
+            f"strain solve did not converge on grid {chi.shape} ({chi.size:,} sites): "
+            + "; ".join(why)
+            + ". The strain field is wrong, not merely imprecise. Pass require_converged=False "
+              "to inspect it.")
 
     # Strain at element centres from the trilinear gradient at xi = 0.
     _, G0 = _shape_derivatives(h)
@@ -287,6 +358,7 @@ def solve_strain_fd(inside_mask, eps_star, C_dot, C_matrix, h, tol=1e-10, maxite
     off = eps_T * chi
     elastic = FDStrainTensor(exx - off, eyy - off, ezz - off, exy, eyz, ezx)
     elastic.cg_iterations, elastic.cg_residual = iters, rel
+    elastic.cg_converged, elastic.cg_modes_dropped = converged, op.modes_dropped
 
     return (elastic, total) if return_total else elastic
 
@@ -299,6 +371,12 @@ def _pcg(op, F, tol, maxiter, verbose=False):
     the solution orthogonal to that null space provided the iterates are kept orthogonal to it
     -- which is what removing the mean of each component does, and what the preconditioner's
     zeroed k = 0 block does automatically.
+
+    Returns (U, iterations, relative residual, breakdown reason or None). CG on a semi-definite
+    system with an imperfect preconditioner can break down rather than converge slowly, and the
+    two need telling apart: a breakdown leaves U holding whatever the last step put there, which
+    can be arbitrarily large. Both curvature quantities are checked, since either going
+    non-positive means the iteration has lost a property it relies on.
     """
     def project(V):
         return V - V.mean(axis=(-3, -2, -1), keepdims=True)
@@ -311,13 +389,16 @@ def _pcg(op, F, tol, maxiter, verbose=False):
     rz = float(np.vdot(R, Z).real)
     f_norm = float(np.linalg.norm(F))
     if f_norm == 0.0:
-        return U, 0, 0.0
+        return U, 0, 0.0, None
+    if rz <= 0.0:
+        return project(U), 0, 1.0, f"preconditioner is not positive definite (r.Mr = {rz:.3e})"
 
-    rel = 1.0
+    rel, breakdown = 1.0, None
     for it in range(1, maxiter + 1):
         AP = op.apply(P)
         pap = float(np.vdot(P, AP).real)
         if pap <= 0:
+            breakdown = f"non-positive curvature p.Ap = {pap:.3e}"
             break
         alpha = rz / pap
         U += alpha * P
@@ -329,10 +410,13 @@ def _pcg(op, F, tol, maxiter, verbose=False):
             break
         Z = op.precondition(R)
         rz_new = float(np.vdot(R, Z).real)
+        if rz_new <= 0.0:
+            breakdown = f"preconditioner lost positive definiteness (r.Mr = {rz_new:.3e})"
+            break
         P = Z + (rz_new / rz) * P
         rz = rz_new
 
-    return project(U), it, rel
+    return project(U), it, rel, breakdown
 
 
 def strain_energy(strain, inside_mask, C_dot, C_matrix, h):
