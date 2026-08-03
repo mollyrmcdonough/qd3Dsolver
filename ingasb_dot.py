@@ -1,9 +1,19 @@
 """InAs / In(x)Ga(1-x)Sb / InAs quantum dots and dashes: strain, band landscape, electron states.
 
 Driver for the two notebooks `ingasb_lens.ipynb` and `ingasb_dash.ipynb`, which differ only in
-the shape passed to `build`. Material parameters and their provenance live in `materials_sb.py`;
-read that module's docstring before trusting any number out of here, because two entries in the
-source database are demonstrably wrong and one of them (GaSb's a_v sign) sets the hole well depth.
+the shape passed to `build`. Material parameters and their provenance live in `materials.py` (via
+`materials_sb.py`, the antimonide narrative layer); read that module's docstring before trusting
+any number out of here.
+
+THE GENERAL MACHINERY NOW LIVES IN `heterostructure.py`. Shapes, `build`, the band landscape, the
+state solvers and the figures work for any dot in any matrix and were moved there; this module
+re-exports them unchanged, so every existing caller keeps working, and adds what is specific to
+this system: the broken-gap pocket analysis and the eight-band hole ladder.
+
+Use `heterostructure` directly for anything that is not InAs/In(x)Ga(1-x)Sb, and in particular use
+`heterostructure.confinement` rather than `pocket_metrics` below -- it makes no assumption about
+which side of the interface a carrier sits on, and it discards wells that reach the wall of the
+periodic box instead of reporting their padding-dependent volume as physics.
 
 What makes this system different from the Pryor InAs/GaAs benchmark
 -------------------------------------------------------------------
@@ -23,11 +33,21 @@ not have at all, which is why the FD elasticity solver is used here.
 assumed: over compositions x = 0.35 to 1.0 the deepest point of the pocket goes from 83 to 190 meV
 and the island volume was varied by 4x on top of that, and the computed ground state moved by
 3.6 meV -- in the wrong direction, because it is box zero-point energy, not binding. The reason is
-geometric and `pocket_metrics` quantifies it: binding any state in a spherical well of depth V0
-and radius R needs V0*R^2 > pi^2*hbar^2/(8m) = 3.78 eV nm^2 at the InAs electron mass, and the
-pocket reaches at most 2.45 -- and that estimate is optimistic, since the pocket is a thin shell
-wrapped around a large repulsive barrier and a shell binds worse than a compact sphere of the same
-volume.
+geometric: binding any state in a spherical well of depth V0 and radius R needs
+V0*R^2 > pi^2*hbar^2/(8m) = 3.61 eV nm^2 at the InAs electron mass, and the pocket does not come
+close -- and that estimate is optimistic, since the pocket is a thin shell wrapped around a large
+repulsive barrier and a shell binds worse than a compact sphere of the same volume.
+
+Measured at a CONVERGED box (`heterostructure.confinement`, InSb lens, h/d = 1/4), the pocket
+reaches V0*R^2 = 1.02 against that 3.61, i.e. it falls short by a factor of 3.5. The margin is
+padding-independent -- 0.71 at pad 7.5 nm rising to 1.02 by pad 30 nm, converging -- so the
+conclusion does not rest on the box. Turned around, `critical_size` says the island would have to
+be 37.6 nm across rather than 20 to bind the electron at all, at fixed shape.
+
+Two numbers previously quoted here, "3.78 eV nm^2" and "the pocket reaches at most 2.45", predate
+the parameter-set corrections: the threshold moved because the derived InAs electron mass did
+(0.0249 -> 0.0260), and the 2.45 came from a composition-and-size sweep run with the old
+deformation potentials, on an unconverged box, and has not been repeated.
 
 So the electron here is bound by Coulomb attraction to the hole in the island, not by a
 single-particle well. That is the standard picture for a type-II dot, and it means any "electron
@@ -51,314 +71,42 @@ benchmark and costs minutes rather than seconds.
 """
 import json
 import os
-import time
 
 import numpy as np
 
 import qdsolver_core as qd
-import elasticity_fd as ef
-import piezoelectric as pz
-import strain_fourier as sf
 import kp_confined as kpc
 import kp_pryor as kp
 import eigensolvers as eig
 import materials_sb as ms
+import heterostructure as hs
+
+# The general machinery, re-exported so this module's public surface is unchanged. Every name
+# here moved to `heterostructure.py` verbatim; none of it was antimonide-specific. `confinement`
+# is the alignment-agnostic replacement for `pocket_metrics` below -- prefer it.
+from heterostructure import (                                              # noqa: F401
+    lens, spherical_lens, dash, dash_base_for_aspect, dash_height_for_volume,
+    material_spec, build,
+    valence_edge, cut_indices, band_profiles,
+    binding_threshold, hole_mass, well_metrics, critical_size, confinement,
+    electron_states, hole_well, eight_band_states,
+    plot_bands, plot_maps,
+)
 
 
 # --------------------------------------------------------------------------------------
-# Shapes
-# --------------------------------------------------------------------------------------
-
-def lens(radius, height):
-    """Circular lens (half-ellipsoid dome) of base radius `radius` and height `height`."""
-    return dict(
-        kind='lens',
-        label=f"lens r = {radius:g} nm, h = {height:g} nm",
-        extent=(2 * radius, 2 * radius, height),
-        volume=qd.lens_volume(radius, height),
-        mask=lambda X, Y, Z: qd.lens_mask(X, Y, Z, radius, height),
-        params=dict(radius=radius, height=height),
-    )
-
-
-def spherical_lens(radius, height):
-    """Lens cut from a sphere, the dot geometry of Pryor & Pistol Fig. 1(a).
-
-    Use this, not `lens`, when comparing against their tables: `lens` is a half-ellipsoid, which
-    stands vertically at its rim and encloses 23% more volume at h/d = 1/4. See
-    `qdsolver_core.spherical_cap_mask`.
-    """
-    return dict(
-        kind='spherical_lens',
-        label=f"spherical lens r = {radius:g} nm, h = {height:g} nm (h/d = {height/(2*radius):.3g})",
-        extent=(2 * radius, 2 * radius, height),
-        volume=qd.spherical_cap_volume(radius, height),
-        mask=lambda X, Y, Z: qd.spherical_cap_mask(X, Y, Z, radius, height),
-        params=dict(radius=radius, height=height),
-    )
-
-
-def dash(length, width, height, contact_angle_deg=qd.DASH_CONTACT_ANGLE_DEG):
-    """Elongated faceted island (truncated rectangular pyramid), after Tersoff and Tromp,
-    Phys. Rev. Lett. 70, 2782 (1993). See `qdsolver_core.dash_mask` for the geometry and for the
-    provenance limits on it."""
-    return dict(
-        kind='dash',
-        label=(f"dash {length:g} x {width:g} x {height:g} nm, "
-               f"facets {contact_angle_deg:g} deg, aspect {length/width:.1f}:1"),
-        extent=(length, width, height),
-        volume=qd.dash_volume(length, width, height, contact_angle_deg),
-        mask=lambda X, Y, Z: qd.dash_mask(X, Y, Z, length, width, height, contact_angle_deg),
-        params=dict(length=length, width=width, height=height,
-                    contact_angle_deg=contact_angle_deg),
-    )
-
-
-def dash_base_for_aspect(aspect, height, target_volume,
-                         contact_angle_deg=qd.DASH_CONTACT_ANGLE_DEG):
-    """Base dimensions of a dash with a given aspect ratio, holding BOTH volume and height fixed.
-
-    Returns (length, width), or None if no base can hold `target_volume` at this height and
-    facet angle.
-
-    This is the controlled way to vary shape. The obvious alternative -- fix the base area and
-    solve for height -- forces the narrow end of the series toward its geometric ceiling, where
-    the flat top has almost vanished and the island is really a pointed ridge. Then the series
-    varies aspect ratio AND top-face fraction AND height at once, and any trend in the answer
-    cannot be attributed to elongation. Holding height and volume fixed leaves aspect ratio as
-    the only thing that changes.
-
-    The width still has a floor: the facets must not meet below `height`, i.e.
-    width >= 2*height/tan(theta). Past that the shape is impossible at any length.
-    """
-    t = np.tan(np.deg2rad(contact_angle_deg))
-    w_min = 2.0 * height / t
-    # V(w) = aspect*w^2*height - k*(aspect+1)*w*height^2/2 + k^2*height^3/3, k = 2/tan
-    lo, hi = w_min, max(w_min * 2.0, 10.0)
-    vol = lambda w: qd.dash_volume(w * aspect, w, height, contact_angle_deg)
-    while vol(hi) < target_volume:
-        hi *= 2.0
-        if hi > 1e5:
-            return None
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if vol(mid) < target_volume:
-            lo = mid
-        else:
-            hi = mid
-    w = 0.5 * (lo + hi)
-    return w * aspect, w
-
-
-def dash_height_for_volume(length, width, target_volume,
-                           contact_angle_deg=qd.DASH_CONTACT_ANGLE_DEG):
-    """Height that gives a dash of `target_volume`, or None if the island is too narrow to hold
-    it at this facet angle. Use to build constant-volume aspect-ratio series, where any change
-    in the answer is shape rather than size -- the facet set-back removes proportionally more
-    material from a narrow island, so fixing length*width*height does NOT fix the volume."""
-    lo, hi = 1e-9, (width / 2.0) * np.tan(np.deg2rad(contact_angle_deg))
-    if qd.dash_volume(length, width, hi, contact_angle_deg) < target_volume:
-        return None
-    for _ in range(100):
-        mid = 0.5 * (lo + hi)
-        if qd.dash_volume(length, width, mid, contact_angle_deg) < target_volume:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
-
-# --------------------------------------------------------------------------------------
-# Environment
-# --------------------------------------------------------------------------------------
-
-def build(shape, x, h=0.5, pad=6.0, z_pad=None, use_piezo=True, matrix='InAs',
-          vol_tol=0.15, verbose=True, require_converged=True):
-    """Grid, mask, strain, piezoelectric potential and band-edge fields for one configuration.
-
-    `x` is the InSb fraction of the In(x)Ga(1-x)Sb dot. `shape` comes from `lens` or `dash`.
-
-    The strain is solved with `elasticity_fd`, i.e. Pryor's real-space method with
-    position-dependent elastic constants, not the Fourier solver. That is not a stylistic choice
-    here: the electron pocket this system relies on lives in the *matrix*, where a homogeneous
-    solver gets the stiffness contrast wrong, and In(x)Ga(1-x)Sb differs from InAs in bulk
-    modulus by up to ~20% across the composition range.
-
-    `vol_tol` guards the mask: a faceted island on a cubic grid is staircased, and the volume
-    error is first order in h. Exceeding the tolerance raises rather than warns, because a mask
-    that is 15% oversized makes every energy below wrong by about as much.
-    """
-    dot = ms.ingasb(x)
-    mat = ms.SB_MATERIALS[matrix]
-
-    cx, cy, cz, X, Y, Z = qd.island_grid(shape['extent'], h, pad, z_pad=z_pad)
-    mask = shape['mask'](X, Y, Z)
-    if not mask.any():
-        raise ValueError(f"empty mask: the island is smaller than one cell at h = {h}")
-
-    vol_err = qd.mask_volume_error(mask, h, shape['volume'])
-    if abs(vol_err) > vol_tol:
-        raise ValueError(
-            f"mask volume error {vol_err:+.3f} exceeds {vol_tol}: refine h (currently {h}) or "
-            f"enlarge the island. Volume error is first order in h for a faceted shape.")
-    for ax in (0, 1):
-        a = qd.mirror_asymmetry(mask, ax)
-        if a:
-            raise ValueError(f"mask is not mirror symmetric about axis {ax} ({a} voxels); the "
-                             f"grid axis is not symmetric to machine precision")
-
-    eps_star = ms.misfit(dot, mat)
-    t0 = time.time()
-    # require_converged is the default and is left on deliberately: an unconverged or
-    # preconditioner-filtered strain field produces band edges that look plausible and are wrong,
-    # and it used to be reported only under verbose -- which is how a whole box-convergence study
-    # got run on two silently broken large grids.
-    strain = ef.solve_strain_fd(mask, eps_star, ms.elastic(dot), ms.elastic(mat), h, tol=1e-10,
-                                require_converged=require_converged)
-    t_strain = time.time() - t0
-
-    phi = np.zeros(mask.shape)
-    if use_piezo:
-        e14 = np.where(mask, dot['e14'], mat['e14'])
-        phi = pz.potential(strain, e14, mat['eps_R'], h)
-
-    Ec, Ev = ms.band_edge_fields(mask, strain.trace, dot, mat)
-    U = -phi                       # electrostatic potential ENERGY of an electron
-    Ec, Ev = Ec + U, Ev + U
-
-    env = dict(shape=shape, x=x, dot=dot, matrix=mat, h=h, pad=pad,
-               cx=cx, cy=cy, cz=cz, X=X, Y=Y, Z=Z, mask=mask,
-               strain=strain, phi=phi, Ec=Ec, Ev=Ev, eps_star=eps_star,
-               vol_err=vol_err,
-               Ec_far=float(mat['Eg']), Ev_far=0.0)   # unstrained matrix edges, the energy zero
-
-    if verbose:
-        g = strain.at(mask)
-        tr = g['exx'] + g['eyy'] + g['ezz']
-        print(f"{shape['label']}   dot = {dot['name']}")
-        print(f"  grid {mask.shape} = {mask.size:,} pts, h = {h} nm, "
-              f"box {len(cx)*h:.0f} x {len(cy)*h:.0f} x {len(cz)*h:.0f} nm")
-        print(f"  island {mask.sum():,} cells, volume {shape['volume']:.1f} nm^3, "
-              f"vol err {vol_err:+.3f}")
-        print(f"  misfit {eps_star*100:+.2f}%  ->  <Tr eps> = {tr:+.5f}  "
-              f"(exx {g['exx']:+.5f}, eyy {g['eyy']:+.5f}, ezz {g['ezz']:+.5f})")
-        print(f"  strain: CG {strain.cg_iterations} iters, rel {strain.cg_residual:.1e}, "
-              f"{strain.cg_modes_dropped} mode(s) dropped, {t_strain:.1f}s")
-        if use_piezo:
-            print(f"  piezo {phi.min()*1e3:+.1f} .. {phi.max()*1e3:+.1f} meV")
-        print(f"  E_c: dot {Ec[mask].mean():.3f}, matrix min {Ec[~mask].min():.3f}, "
-              f"far {env['Ec_far']:.3f} eV   "
-              f"-> electron pocket depth {env['Ec_far'] - Ec[~mask].min():.3f} eV")
-    return env
-
-
-# --------------------------------------------------------------------------------------
-# Band landscape
-# --------------------------------------------------------------------------------------
-
-def valence_edge(env, hydrostatic_applied=True):
-    """Exact k = 0 top of the local valence band, everywhere on the grid.
-
-    This is the largest eigenvalue of the 6x6 valence block of the strain Hamiltonian, so it
-    includes the full Bir-Pikus shear terms, not just the hydrostatic shift already in `Ev`. The
-    shear is not a correction here: it splits heavy and light hole by hundreds of meV in a dot
-    strained by several percent, and it is what sets the hole well depth.
-    """
-    m = env['mask']
-    pick = lambda k: np.where(m, env['dot'][k], env['matrix'][k])
-    return kp.local_band_edges(env['strain'], Ev=env['Ev'], Ec=env['Ec'],
-                               delta_so=pick('delta_so'), a_c=pick('a_c'), a_v=pick('a_v'),
-                               b=pick('b'), d=pick('d'),
-                               hydrostatic_applied=hydrostatic_applied)
-
-
-def cut_indices(env, through='centre'):
-    """Index tuples for the three principal cuts through the island."""
-    ix, iy = len(env['cx']) // 2, len(env['cy']) // 2
-    iz = int(np.argmin(np.abs(env['cz'] - env['shape']['extent'][2] / 2.0)))
-    return dict(x=(slice(None), iy, iz), y=(ix, slice(None), iz), z=(ix, iy, slice(None)))
-
-
-def band_profiles(env):
-    """Conduction and valence edges along [100], [010] and [001] through the island."""
-    edges = valence_edge(env)
-    cuts = cut_indices(env)
-    axes = dict(x=env['cx'], y=env['cy'], z=env['cz'])
-    out = {}
-    for k, idx in cuts.items():
-        out[k] = dict(r=axes[k], Ec=edges['cb'][idx], v1=edges['v1'][idx],
-                      v2=edges['v2'][idx], v3=edges['v3'][idx],
-                      inside=env['mask'][idx])
-    out['kramers'] = edges['kramers']
-    return out
-
-
-def plot_bands(env, figsize=(13, 4.0)):
-    """Band edges from the local strain along the three principal directions.
-
-    Same construction as Pryor's Fig. 2 -- eigenvalues of the strain Hamiltonian at k = 0 -- but
-    for this system the interesting feature is the opposite one: the conduction edge dipping
-    BELOW the far-field InAs value in the matrix around the dot, which is the electron pocket.
-    """
-    import matplotlib.pyplot as plt
-    p = band_profiles(env)
-    fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True)
-    titles = {'x': '[100] through the centre', 'y': '[010] through the centre',
-              'z': '[001] through the centre'}
-    for ax, k in zip(axes, ('x', 'y', 'z')):
-        d = p[k]
-        ax.plot(d['r'], d['Ec'], 'k-', lw=1.5, label='$E_c$')
-        ax.plot(d['r'], d['v1'], '-', color='#b03030', lw=1.5, label='$E_v$ (top)')
-        ax.plot(d['r'], d['v2'], '-', color='#b03030', lw=0.8, alpha=0.6)
-        ax.plot(d['r'], d['v3'], '-', color='#b03030', lw=0.8, alpha=0.6)
-        ax.axhline(env['Ec_far'], color='0.55', ls='--', lw=0.8)
-        ax.axhline(env['Ev_far'], color='0.55', ls=':', lw=0.8)
-        for e in np.flatnonzero(np.diff(d['inside'].astype(int))):
-            ax.axvline((d['r'][e] + d['r'][e + 1]) / 2, color='0.85', lw=0.8, zorder=0)
-        ax.set_xlabel(f"{k} (nm)")
-        ax.set_title(titles[k], fontsize=9)
-    axes[0].set_ylabel('E (eV)')
-    axes[0].legend(fontsize=8, loc='center left')
-    axes[-1].text(0.98, 0.06, 'dashed: unstrained InAs $E_c$\ndotted: unstrained InAs $E_v$',
-                  transform=axes[-1].transAxes, ha='right', fontsize=7, color='0.4')
-    fig.suptitle(f"{env['shape']['label']}   |   dot = {env['dot']['name']}   |   "
-                 f"local band edges at $k=0$", fontsize=10)
-    fig.tight_layout()
-    return fig
-
-
-def plot_maps(env, figsize=(13, 3.6)):
-    """Maps of Tr(eps), the conduction edge and the valence edge in the plane y = 0."""
-    import matplotlib.pyplot as plt
-    edges = valence_edge(env)
-    iy = len(env['cy']) // 2
-    ext = [env['cz'][0], env['cz'][-1], env['cx'][0], env['cx'][-1]]
-    panels = [(env['strain'].trace[:, iy, :], r'Tr $\varepsilon$', 'RdBu_r', None),
-              (edges['cb'][:, iy, :], '$E_c$ (eV)', 'viridis', None),
-              (edges['v1'][:, iy, :], '$E_v$, top (eV)', 'magma', None)]
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
-    for ax, (data, title, cmap, _) in zip(axes, panels):
-        vmax = np.abs(data).max() if cmap == 'RdBu_r' else None
-        im = ax.imshow(data, origin='lower', extent=ext, aspect='auto', cmap=cmap,
-                       vmin=-vmax if vmax else None, vmax=vmax)
-        ax.contour(env['cz'], env['cx'], env['mask'][:, iy, :].astype(float), [0.5],
-                   colors='w', linewidths=1.0)
-        ax.set_title(title, fontsize=9)
-        ax.set_xlabel('z (nm)')
-        fig.colorbar(im, ax=ax, fraction=0.046)
-    axes[0].set_ylabel('x (nm)')
-    fig.suptitle(f"{env['shape']['label']}   |   dot = {env['dot']['name']}   |   "
-                 f"slice at y = 0", fontsize=10)
-    fig.tight_layout()
-    return fig
-
-
-# --------------------------------------------------------------------------------------
-# States
+# The broken-gap electron pocket
 # --------------------------------------------------------------------------------------
 
 def pocket_metrics(env, depths=(0.0, 0.01, 0.025, 0.05, 0.10), verbose=True):
     """Size and depth of the strain-induced conduction pocket, and whether it can bind at all.
+
+    SUPERSEDED by `heterostructure.confinement`, which does the same thing for both carriers
+    without assuming the electron is outside the island, and which discards contours that reach
+    the wall of the periodic box -- this function does not, and at large padding its shallow rows
+    report a volume set by the padding rather than by the island. It is kept because the notebooks
+    and `sweep` below call it and because its numbers are quoted in the README.
+
 
     The obvious summary of the pocket, `min(E_c)` over the matrix, is misleading and was
     misleading here: it reports the extreme value at the island's rim where the tensile strain
@@ -411,97 +159,6 @@ def pocket_metrics(env, depths=(0.0, 0.01, 0.025, 0.05, 0.10), verbose=True):
                   f"{r['mean_depth']*1e3:>10.1f}m {r['VR2']:>9.2f}  "
                   f"{'could bind' if r['binds'] else 'too weak'}")
     return rows
-
-
-def electron_states(env, k=4, verbose=True):
-    """Single-band conduction states in the strain-induced pocket.
-
-    The potential is the strained conduction edge including the piezoelectric term; the mass is
-    the Kane-derived band-edge mass of each material (see `materials_sb.electron_mass`). Energies
-    are on the same zero as everything else, the unstrained InAs valence edge, so a state is
-    bound iff its energy is below `env['Ec_far']` = Eg(InAs).
-
-    Returns E, V and the fraction of each state's density inside the dot -- which for this
-    system should be SMALL, since the electron is expelled from the dot and lives in the tensile
-    InAs shell around it. A large fraction means something is wrong with the alignment.
-    """
-    m = env['mask']
-    m_e = np.where(m, ms.electron_mass(env['dot']), ms.electron_mass(env['matrix']))
-    E, V = qd.solve_states(m_e, env['Ec'], env['h'], n_states=k)
-
-    inside = []
-    for j in range(V.shape[1]):
-        rho = np.abs(V[:, j]) ** 2
-        inside.append(float(rho.reshape(m.shape)[m].sum() / rho.sum()))
-    inside = np.array(inside)
-
-    if verbose:
-        print(f"  electron states (bound below E_c(InAs, far) = {env['Ec_far']:.3f} eV):")
-        for j, (e, f) in enumerate(zip(E, inside)):
-            tag = 'bound' if e < env['Ec_far'] else 'unbound (box state)'
-            print(f"    {j}: E = {e:.4f} eV, binding {(env['Ec_far']-e)*1e3:+7.1f} meV, "
-                  f"{f*100:5.1f}% inside the dot   {tag}")
-    return dict(E=E, V=V, inside=inside, n_bound=int((E < env['Ec_far']).sum()))
-
-
-def hole_well(env):
-    """Depth and location of the hole well, from the exact k = 0 valence edge.
-
-    Holes are confined where the local valence edge is HIGHEST. Returns the edge inside the dot,
-    the far-field matrix value, and the depth -- all in the electron convention, so a larger
-    positive depth is a more strongly confined hole.
-    """
-    edges = valence_edge(env)
-    m = env['mask']
-    v_in = float(edges['v1'][m].max())
-    v_out = float(edges['v1'][~m].max())
-    return dict(v_in=v_in, v_out=v_out, far=env['Ev_far'],
-                depth=v_in - env['Ev_far'], above_matrix=v_in - v_out,
-                broken_gap=v_in - env['Ec_far'])
-
-
-def eight_band_states(env, band='vb', k=4, tol=1e-7, maxiter=8000, verbose=True):
-    """OPT-IN, minutes not seconds: eight-band states, the same machinery as the Pryor benchmark.
-
-    Needed for the hole, which a single band cannot describe in a narrow-gap strained alloy.
-
-    Read this before believing the output. In a **broken-gap** system the notion of "the states
-    near the valence edge" is not clean: the dot's valence edge lies above the matrix's
-    conduction edge, so at the same energy there are dot-like valence states and matrix-like
-    conduction states, and they hybridize. A folded-spectrum solve returns the eigenvalues
-    nearest sigma and its residual certifies only that they ARE eigenpairs, not that they are the
-    ones wanted. So the localization fraction returned here is not decoration -- it is the only
-    thing distinguishing a hole state from a matrix electron state at the same energy. Always
-    re-run with sigma moved and check the spectrum is unchanged.
-    """
-    m, h = env['mask'], env['h']
-    ops = kpc.GridOperators(m.shape, h, periodic=False)
-    fields = kp.material_fields(m, ms.kp_params(env['dot']), ms.kp_params(env['matrix']),
-                                env['Ev'], env['Ec'], n_bands=8)
-    H = kp.confined_hamiltonian(ops, fields, n_bands=8, strain=env['strain'])
-
-    if band == 'vb':
-        sigma = kp.hole_sigma(env['Ev'], env['strain'],
-                              np.where(m, env['dot']['b'], env['matrix']['b']),
-                              np.where(m, env['dot']['d'], env['matrix']['d']),
-                              np.where(m, env['dot']['delta_so'], env['matrix']['delta_so']),
-                              inside_mask=m)
-    else:
-        sigma = float(env['Ec'][~m].min())
-
-    if verbose:
-        print(f"  eight-band {band}: {H.shape[0]:,} unknowns, sigma = {sigma:.4f} eV")
-    E, V, info = eig.solve_interior(H, k=k, sigma=sigma, tol=tol, maxiter=maxiter,
-                                    verbose=verbose)
-
-    n = m.size
-    inside = np.array([float((np.abs(V[:, j].reshape(8, n)) ** 2).sum(axis=0)
-                             .reshape(m.shape)[m].sum()
-                             / (np.abs(V[:, j]) ** 2).sum()) for j in range(V.shape[1])])
-    if verbose:
-        for j, (e, f) in enumerate(zip(E, inside)):
-            print(f"    {j}: E = {e:.4f} eV, {f*100:5.1f}% inside the dot")
-    return dict(E=E, V=V, inside=inside, sigma=sigma, info=info, band=band)
 
 
 # --------------------------------------------------------------------------------------

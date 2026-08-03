@@ -209,11 +209,67 @@ Three things worth knowing before using it:
 system, the legacy switches, and `SB_MATERIALS` aliased to `materials.MATERIALS`. New code should
 import `materials` directly.
 
+### Heterostructures
+
+`heterostructure.py` is one coherently strained island in a matrix, general in the material pair:
+shapes, `build`, the strain solve, the band landscape, the state solvers and the figures. Any dot
+in any matrix, in any band alignment.
+
+```python
+import heterostructure as hs
+env = hs.build(hs.spherical_lens(10.0, 5.0), 'InSb', matrix='GaAs')
+hs.confinement(env)
+```
+
+**The confinement test never asks what the alignment type is.** Asking would be fragile — strain
+moves the band edges by hundreds of meV and can flip the answer relative to the unstrained
+alignment, and a "type" is a property of two bulk materials rather than of a strained 3D
+structure. Instead, for each carrier it builds a *binding depth field* — how far the local edge
+lies on the confining side of the far-field matrix value — and the well is wherever that is
+positive, whatever region it turns out to be. A type-I dot puts it inside the mask; the
+antimonides put the electron's outside it, in the tensile shell the island digs around itself.
+Same code, and a `frac_in_dot` column reports which happened rather than assuming. Alignment type
+is carried as a label only.
+
+Binding uses V₀R² > π²ħ²/8m* on an equivalent sphere. **Failing is decisive; passing is only
+suggestive** — a real well of the same volume binds no better, and a thin shell binds far worse.
+
+`critical_size` turns that into the smallest island of a given shape that could confine a
+carrier, **from a single solve**. That works because continuum elasticity has no length scale: at
+fixed shape every band edge is size-independent (verified to 0.0 meV over a 4× range), so V₀ is
+fixed and R is exactly proportional to island size, making V₀R² > threshold a condition on size
+alone. It excludes Coulomb binding, which is what actually holds the carrier in the broken-gap
+antimonides.
+
+#### A well that reaches the box wall is measuring the padding
+
+The shallowest contour of a well is a trap, and it is easy to hit. The island's compression puts
+the surrounding matrix into tension, which *raises* the local valence edge over a broad shallow
+halo — so "everywhere the hole is bound" is not a well at all. Measured for an InSb lens in InAs:
+
+| padding | 0 meV contour | 25 meV contour | 100 meV contour |
+|---|---|---|---|
+| 7.5 nm | 23,357 nm³ | 7,304 nm³ | 1,454 nm³ |
+| 12 nm | 53,870 nm³ | 7,762 nm³ | 1,434 nm³ |
+| 18 nm | **124,418 nm³** | 7,785 nm³ | 1,439 nm³ |
+
+The zero-depth region grows without bound and is 96% outside the island; the deeper contours
+converge. So `well_metrics` flags any region touching the wall of the periodic cell as
+`box_limited`, and `critical_size` **discards** those rows rather than reporting a
+padding-dependent volume as physics. The electron's critical size then converges properly:
+45.3 → 41.9 → 39.2 → 38.1 → **37.6 nm** as padding goes 7.5 → 30 nm.
+
+That number is the useful form of this project's central negative result. The InSb-in-InAs
+electron pocket reaches V₀R² = 1.02 against a threshold of 3.61 eV·nm² — short by 3.5×, at every
+padding — so the island would have to be **37.6 nm across rather than 20** to bind an electron at
+all. The margin, not just the verdict, is box-independent.
+
 ### The antimonide system (InAs / In*ₓ*Ga₁₋ₓSb)
 | Module | Contents |
 |---|---|
 | `materials_sb.py` | The InAs/In*ₓ*Ga₁₋ₓSb narrative layer over `materials.py`: `ingasb(x)`, the alignment table, the legacy switches, and the record of the three parameter errors. Holds no numbers of its own. |
-| `ingasb_dot.py` | Shapes, environment build, band landscape, the strain-pocket binding criterion, single-band electron states, the eight-band opt-in, and the size sweep of eight-band hole levels (`hole_size_sweep`, checkpointed to JSON) with its two figures. |
+| `heterostructure.py` | The general machinery, above. `ingasb_dot` re-exports all of it. |
+| `ingasb_dot.py` | What is specific to this system: the broken-gap `pocket_metrics`, the composition/size `sweep`, and the size sweep of eight-band hole levels (`hole_size_sweep`, checkpointed to JSON) with its two figures. Re-exports the general API, so existing callers are unchanged. |
 
 This system is **broken gap**: the In*ₓ*Ga₁₋ₓSb valence edge lies above the InAs conduction edge at
 every composition. Holes sit in the island, electrons are expelled from it, and the only
@@ -443,7 +499,7 @@ once. Three traps it also handles, all of which bit during development:
 
 | Status | Files |
 |---|---|
-| **Current** | `materials`, `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_fig4`, `pryor_fig6`, `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
+| **Current** | `materials`, `heterostructure`, `elasticity_fd`, `strain_fourier`, `kp_pryor`, `piezoelectric`, `pryor1998`, `eigensolvers`, `qdsolver_core`, `kp_confined` (discretization only), `pryor_fig4`, `pryor_fig6`, `pryor_inhomogeneous.ipynb`, `pryor_fig2.ipynb` |
 | **Superseded, still correct** | `qdsolver_core.trace_strain_from_mask` — hydrostatic-only *and* returns constrained rather than elastic strain, overstating the band-edge shift by 1.165×. Kept only so older notebooks still run. |
 | **Known wrong — do not use** | `kp_luttinger.py` and `kp_confined.build_confined_luttinger_kohn` — the split-off band is on the wrong side of the diagonal and the R/S off-diagonals are misplaced. Both carry docstrings saying so. |
 | **Suspect results** | `pryor_benchmark.ipynb` and `multiband_bulk_validation.ipynb` import `kp_luttinger`; their **multiband** numbers predate the matrix fix. Their single-band content is unaffected. |
