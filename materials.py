@@ -553,6 +553,102 @@ def alignment_table(system='InGaSb', compositions=(0.0, 0.2, 0.35, 0.5, 0.75, 1.
           "conduction edge, so electrons stay in the matrix and holes in the dot.")
 
 
+#: Colour per alignment type. Validated for colour-vision deficiency with the `dataviz` skill's
+#: checker: worst adjacent pair is red/gold at deltaE 15.0 deutan, 17.6 tritan, 20.4 normal, all
+#: above the floors, and every slot clears the lightness band, chroma floor and 3:1 contrast.
+#: Type is ALSO printed on each bar, so identity never rests on colour alone.
+ALIGNMENT_COLORS = {
+    'straddling (I)': '#30609b',
+    'staggered (II)': '#b8860b',
+    'broken gap (III)': '#b03030',
+    'no offset': '#8a8a8a',
+}
+
+
+def plot_alignment(dots, matrix='InAs', trace_strain=None, ax=None, figsize=(9.5, 5.0),
+                   annotate=True):
+    """Band-lineup diagram: where each dot material sits against `matrix`.
+
+    `dots` is a list of specs -- a binary name, an (alloy, x) pair, or a material dict:
+
+        plot_alignment(['GaSb', ('InGaSb', 0.5), 'InSb'], matrix='InAs')
+        plot_alignment([('InAsSb', x/4) for x in range(5)], matrix='InAs')
+
+    Each material is drawn as a bar spanning its gap, from E_v to E_c, on a zero at the
+    unstrained matrix valence edge. The matrix's own edges are horizontal reference lines, and
+    they are the thresholds that matter: a bar whose TOP is below the upper line has a conduction
+    well, a bar whose BOTTOM is above the lower line has a valence well, and a bar whose bottom
+    rises above the UPPER line is broken gap.
+
+    `trace_strain` applies a hydrostatic shift to the dots only (the matrix is the reference).
+    Pass the mean Tr(eps) from a real solve to see where the edges actually land -- it moves them
+    by hundreds of meV in these systems, enough to change the alignment type, so the unstrained
+    diagram is a starting point rather than an answer.
+
+    A bar chart of ranges is the right form here because the quantity IS an interval: what
+    matters is where each gap sits relative to two thresholds, not any single number. Reading it
+    off a table of four numbers per material is what this replaces.
+    """
+    import matplotlib.pyplot as plt
+
+    mat = MATERIALS[matrix] if isinstance(matrix, str) else matrix
+    tr = 0.0 if trace_strain is None else trace_strain
+
+    resolved = []
+    for spec in dots:
+        d = material(*spec) if isinstance(spec, (tuple, list)) else material(spec)
+        resolved.append((d, alignment(d, mat, tr)))
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=figsize)
+    xs = np.arange(len(resolved))
+
+    ax.axhline(0.0, color='0.45', lw=1.0, ls=':', zorder=1)
+    ax.axhline(mat['Eg'], color='0.45', lw=1.0, ls='--', zorder=1)
+
+    lo = min(a['Ev_dot'] for _, a in resolved)
+    hi = max(a['Ec_dot'] for _, a in resolved)
+    # Headroom for the value labels. Without it the outermost label lands on the frame, and the
+    # bottom one collides with the x tick labels -- which the palette validator cannot see and
+    # only rendering the figure catches.
+    pad = 0.10 * max(hi - lo, 0.2)
+
+    for i, (d, a) in enumerate(resolved):
+        c = ALIGNMENT_COLORS.get(a['type'], '#8a8a8a')
+        ax.bar(i, a['Ec_dot'] - a['Ev_dot'], bottom=a['Ev_dot'], width=0.62,
+               color=c, alpha=0.32, edgecolor=c, linewidth=1.6, zorder=3)
+        if annotate:
+            ax.text(i, a['Ec_dot'] + 0.02 * pad / 0.1, f"{a['Ec_dot']:.2f}", ha='center',
+                    va='bottom', fontsize=7.5, color='0.25')
+            ax.text(i, a['Ev_dot'] - 0.02 * pad / 0.1, f"{a['Ev_dot']:.2f}", ha='center',
+                    va='top', fontsize=7.5, color='0.25')
+
+    # Legend in the fixed type order, not order of appearance, so the same alignment always sits
+    # in the same slot across figures.
+    import matplotlib.patches as mpatches
+    present = [t for t in ALIGNMENT_COLORS if any(a['type'] == t for _, a in resolved)]
+    ax.legend(handles=[mpatches.Patch(facecolor=ALIGNMENT_COLORS[t], alpha=0.32,
+                                      edgecolor=ALIGNMENT_COLORS[t], label=t) for t in present],
+              fontsize=7.5, loc='best', frameon=False)
+
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_xlim(-0.7, len(resolved) - 0.3)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([d['name'] for d, _ in resolved], rotation=20, ha='right', fontsize=8)
+    ax.set_ylabel(f"E (eV), zero at unstrained {mat['name']} $E_v$")
+    ax.text(1.0, mat['Eg'], f"  {mat['name']} $E_c$", transform=ax.get_yaxis_transform(),
+            va='center', fontsize=7.5, color='0.35')
+    ax.text(1.0, 0.0, f"  {mat['name']} $E_v$", transform=ax.get_yaxis_transform(),
+            va='center', fontsize=7.5, color='0.35')
+    ax.set_title(f"band lineup in {mat['name']}, T = {TEMPERATURE:g} K"
+                 + ('' if trace_strain is None else f", dot Tr($\\varepsilon$) = {tr:+.4f}"),
+                 fontsize=10)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=8)
+    ax.figure.tight_layout()
+    return ax.figure
+
+
 def audit():
     """Print every parameter with its provenance, plus the four checks worth making.
 

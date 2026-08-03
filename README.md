@@ -27,6 +27,7 @@ python scripts/shape_validation.py         # dot/dash geometry vs closed-form vo
 python scripts/insb_band_edges_vs_size.py  # InSb/InAs band edges vs size: scale invariance (~100 min)
 python scripts/insb_pryor_pistol_check.py  # ...and why they miss Pryor & Pistol 2005 (seconds)
 python scripts/insb_box_convergence.py     # periodic-box convergence of the dot gap (~25 min)
+python scripts/confinement_map.py          # which systems confine what, and at what size (~3 min)
 python scripts/pryor_fig2.py               # reproduce Pryor's Fig. 2 (homogeneous elasticity)
 python pryor_fig4.py                       # bound-state energies vs island size (Fig. 4)
 python pryor_fig6.py                       # ground-state exciton wave functions (Fig. 6)
@@ -263,6 +264,53 @@ That number is the useful form of this project's central negative result. The In
 electron pocket reaches V₀R² = 1.02 against a threshold of 3.61 eV·nm² — short by 3.5×, at every
 padding — so the island would have to be **37.6 nm across rather than 20** to bind an electron at
 all. The margin, not just the verdict, is box-independent.
+
+#### Which systems confine what, and how big the island has to be
+
+`scripts/confinement_map.py` runs one strain solve per (dot, matrix) pair and reduces each to the
+two numbers that decide whether a nanostructure is useful. Scale invariance is what makes one
+solve enough: V₀ is size-independent, R is exactly proportional to island size, so V₀R² >
+threshold becomes a condition on size alone. `materials.plot_alignment` draws the band lineup
+that goes with it.
+
+At d = 20 nm, h/d = ¼, T = 0 K (V₀R²/threshold; ≥ 1 means a single-particle well can hold it):
+
+| dot | in | misfit | alignment | e ratio | e core in dot | h ratio | h core in dot |
+|---|---|---|---|---|---|---|---|
+| InAs₀.₅Sb₀.₅ | InAs | −3.35% | staggered (II) | 0.17 | 0% | 54.7 | 100% |
+| InSb | InAs | −6.48% | broken gap (III) | 0.32 | 0% | 106.6 | 100% |
+| In₀.₅Ga₀.₅Sb | InAs | −3.59% | broken gap (III) | 0.18 | 0% | 94.1 | 100% |
+| **InAs** | **GaAs** | −6.75% | **straddling (I)** | **4.84** | **100%** | 76.3 | **100%** |
+| GaSb | GaAs | −7.24% | staggered (II) | 1.12 | 0% | 142.9 | 100% |
+| InAs | GaSb | +0.52% | staggered (II) | 9.60 | 100% | 0.67 | 0% |
+
+Every antimonide dot in InAs binds its hole easily and confines **no** electron — the electron
+well that exists is a strain pocket in the matrix, 0% inside the island, and it falls short by a
+factor of 3 to 50. InAs in GaAs is the only conventional type-I dot in the set: both carriers
+bound, both inside the island, strong overlap. GaSb/GaAs and InAs/GaSb bind both carriers but
+hold them on **opposite sides of the interface** — spatially indirect, and a weak transition.
+
+GaSb/GaAs at 1.12 is **too close to call**. The ratio falls with refinement (it was 1.37 at 8
+cells/R), and the same trend takes InSb/InAs from 0.40 to 0.32 over the same step, so a finer grid
+could put it below 1. Treat any row within ~30% of unity as undecided until it is run at `--fine`
+and box-converged.
+
+Binding both carriers is not the same as being type I, which is why the location column is there.
+
+**Two measurement traps this had to route around**, both found by testing rather than reasoning:
+
+- *Read the well core, not the selected contour.* Locating a carrier from the contour that
+  maximises V₀R² puts the InAs/GaAs hole in the matrix — nonsense for the textbook type-I dot.
+  That contour is the shallowest surviving one and is halo-contaminated. `well_core` uses the
+  region within 90% of maximum depth, and the same dot then reads 100% inside.
+- *Discard wells that reach the box wall*, as above.
+
+The critical size itself is good to about **two significant figures**. It is box-converged (~1 nm
+left at pad = 3R) but **not** resolution-converged: for InSb/InAs it runs 31.8 / 35.3 / 37.4 /
+38.8 nm at 8 / 12 / 16 / 20 cells across the island radius, still moving 1.4 nm at the finest and
+roughly linear in *h*, as staircasing of a curved cap should be. The verdicts are far more robust
+than the numbers — the InSb/InAs pocket falls short by 3.5× at every box and every resolution
+tried.
 
 ### The antimonide system (InAs / In*ₓ*Ga₁₋ₓSb)
 | Module | Contents |

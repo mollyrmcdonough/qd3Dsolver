@@ -196,17 +196,21 @@ def material_spec(spec, alloy='InGaSb'):
 
         material_spec(0.35)                -> In0.35Ga0.65Sb   (a float is an alloy fraction)
         material_spec(0.5, 'InAsSb')       -> InAs0.50Sb0.50
+        material_spec(('InAsSb', 0.5))     -> the same, naming the alloy inline
         material_spec('GaSb')              -> the binary
         material_spec(mt.material('InAs')) -> passed through
 
     The float case exists because every caller of `ingasb_dot.build` predates the generalisation
     and passes a bare In(x)Ga(1-x)Sb fraction positionally. Keeping that meaning is what lets the
-    notebooks and the benchmark scripts run unchanged.
+    notebooks and the benchmark scripts run unchanged. The tuple form is what to use in new code
+    that mixes alloys, since it does not depend on the `alloy` argument being set correctly.
     """
     if isinstance(spec, dict):
         return spec
     if isinstance(spec, str):
         return mt.material(spec)
+    if isinstance(spec, (tuple, list)):
+        return mt.material(*spec)
     return mt.alloy(alloy, float(spec))
 
 
@@ -401,6 +405,29 @@ def _touches_boundary(sel):
                 or sel[:, :, 0].any() or sel[:, :, -1].any())
 
 
+def well_core(env, carrier, frac=0.9, edges=None):
+    """Where the DEEPEST part of the well sits: the region within `frac` of the maximum depth.
+
+    This is the right thing to ask when the question is "which side of the interface does this
+    carrier live on", and `well_metrics`' `frac_in_dot` is the wrong thing. That column is
+    computed per contour, and the contour `critical_size` selects is the one maximising V0R^2 --
+    which is the shallowest surviving one, and therefore the most contaminated by the diffuse
+    halo the strained matrix creates. Read off that contour, an InAs dot in GaAs appears to put
+    its hole in the matrix, which is nonsense: it is the textbook type-I dot. Read off the well
+    core, the hole is 100% inside.
+
+    Returns the maximum depth, the core volume, and the fraction of the core inside the island.
+    """
+    D, _ = _depth_field(env, carrier, edges)
+    dmax = float(D.max())
+    if dmax <= 0.0:
+        return dict(depth_max=dmax, volume=0.0, frac_in_dot=float('nan'))
+    sel = D > frac * dmax
+    n = int(sel.sum())
+    return dict(depth_max=dmax, volume=n * env['h'] ** 3,
+                frac_in_dot=float((sel & env['mask']).sum()) / n)
+
+
 def well_metrics(env, carrier, depths=(0.0, 0.01, 0.025, 0.05, 0.10), edges=None):
     """Volume, equivalent radius and binding verdict of the well that holds `carrier`.
 
@@ -495,9 +522,11 @@ def critical_size(env, carrier, depths=(0.0, 0.01, 0.025, 0.05, 0.10), edges=Non
                     box_limited=any(r['box_limited'] for r in all_rows))
     best = max(rows, key=lambda r: r['VR2'])
     factor = float(np.sqrt(best['threshold'] / best['VR2']))
+    core = well_core(env, carrier, edges=edges)
     return dict(scale=float(scale), factor=factor, critical=float(scale) * factor,
                 VR2=best['VR2'], threshold=best['threshold'], mass=best['mass'],
-                frac_in_dot=best['frac_in_dot'], at_depth=best['depth'], carrier=carrier,
+                frac_in_dot=best['frac_in_dot'], core_in_dot=core['frac_in_dot'],
+                depth_max=core['depth_max'], at_depth=best['depth'], carrier=carrier,
                 box_limited=False)
 
 
