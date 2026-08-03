@@ -280,9 +280,9 @@ Two things follow, and the second is the more useful one:
 
 Any dot band edge quoted at pad ≤ 7.5 nm is biased high by at least 24 meV. The well is not.
 
-*(This table is `box_conv3.log`, regenerated after the lattice constant became temperature
-dependent. Every row moved down by a uniform ~1.5 meV — a 0 K lattice gives a 0.4% smaller misfit
-than the 300 K one used before. The convergence behaviour and both conclusions are unchanged.)*
+*(Regenerated after the lattice constant became temperature dependent. Every row moved down by a
+uniform ~1.5 meV — a 0 K lattice gives a 0.4% smaller misfit than the 300 K one used before. The
+convergence behaviour and both conclusions are unchanged.)*
 
 **How the errors were found.** The well is closed-form biaxial strain — no elasticity solve, no
 shape, no grid — so having it disagree while the dot disagreed *by exactly the same amount scaled
