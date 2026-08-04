@@ -205,12 +205,8 @@ def material_spec(spec, alloy='InGaSb'):
     notebooks and the benchmark scripts run unchanged. The tuple form is what to use in new code
     that mixes alloys, since it does not depend on the `alloy` argument being set correctly.
     """
-    if isinstance(spec, dict):
-        return spec
-    if isinstance(spec, str):
-        return mt.material(spec)
-    if isinstance(spec, (tuple, list)):
-        return mt.material(*spec)
+    if isinstance(spec, (dict, str, tuple, list)):
+        return mt.as_material(spec)
     return mt.alloy(alloy, float(spec))
 
 
@@ -727,6 +723,100 @@ def plot_bands(env, figsize=(13, 4.0)):
                  f"local band edges at $k=0$", fontsize=10)
     fig.tight_layout()
     return fig
+
+
+def _allowed_segments(r, profile, E, side):
+    """Contiguous stretches of `r` where a carrier at energy `E` is classically allowed.
+
+    `side` is 'below' for electrons (allowed where E_c < E) and 'above' for holes (allowed where
+    the valence edge lies above E, since a hole's energy runs the other way).
+    """
+    ok = (profile < E) if side == 'below' else (profile > E)
+    if not ok.any():
+        return []
+    idx = np.flatnonzero(ok)
+    breaks = np.flatnonzero(np.diff(idx) > 1)
+    groups = np.split(idx, breaks + 1)
+    return [(r[g[0]], r[g[-1]]) for g in groups if len(g) > 1]
+
+
+def plot_levels(env, electron=None, hole=None, cut='x', ax=None, figsize=(8.0, 5.2),
+                max_levels=6):
+    """Band edges along one principal cut, with computed level energies drawn where each state
+    is classically allowed.
+
+    `electron` is the dict from `electron_states`; `hole` is a dict with an `E` array from
+    `eight_band_states` or `ingasb_dot.hole_ladder`. Either may be omitted.
+
+    Each level is a horizontal segment spanning the classically allowed region at that energy --
+    where E_c dips below the level for an electron, where the valence edge rises above it for a
+    hole. That is the honest way to draw "where the state is" from a 1D cut: it is defined by the
+    potential alone, so it cannot silently disagree with the wavefunction the way a hand-placed
+    line can. A level that is not bound (electron at or above the far-field matrix edge, hole at
+    or below it) is drawn dashed and spans the whole box, because that is exactly what it does --
+    it is a box state, not a confined one.
+
+    Level lines take the colour of the band they belong to rather than a new hue per level: the
+    identity that matters is electron-vs-hole, and the index is a direct label.
+    """
+    import matplotlib.pyplot as plt
+    p = band_profiles(env)[cut]
+    r, Ec, Ev = p['r'], p['Ec'], p['v1']
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=figsize)
+    ax.plot(r, Ec, '-', color='k', lw=1.6, label='$E_c$', zorder=4)
+    ax.plot(r, Ev, '-', color='#b03030', lw=1.6, label='$E_v$ (top)', zorder=4)
+    ax.axhline(env['Ec_far'], color='0.55', ls='--', lw=0.9, zorder=1)
+    ax.axhline(env['Ev_far'], color='0.55', ls=':', lw=0.9, zorder=1)
+
+    # Shade the island so "inside" is visible without a second axis.
+    inside = p['inside']
+    for e in np.flatnonzero(np.diff(inside.astype(int))):
+        ax.axvline((r[e] + r[e + 1]) / 2, color='0.85', lw=0.9, zorder=0)
+
+    # Near-degenerate levels are the norm here -- a p-like doublet sits within a few meV -- so
+    # labels are staggered outward when they would land on each other. Without this the doublet
+    # prints one label on top of the other and reads as a single level.
+    span = float(np.ptp(Ec.tolist() + Ev.tolist()))
+    placed = []
+
+    def label(x, y, text, colour, alpha=1.0):
+        step = 0
+        while any(abs(y - py) < 0.022 * span and abs(step - ps) < 1 for py, ps in placed):
+            step += 1
+        placed.append((y, step))
+        ax.text(x + step * 0.05 * float(r[-1] - r[0]), y, text, va='center', fontsize=7,
+                color=colour, alpha=alpha)
+
+    for states, colour, side, far, tag in (
+            (electron, 'k', 'below', env['Ec_far'], 'e'),
+            (hole, '#b03030', 'above', env['Ev_far'], 'h')):
+        if states is None:
+            continue
+        E = np.atleast_1d(np.asarray(states['E'] if isinstance(states, dict) else states)).real
+        for j, e in enumerate(E[:max_levels]):
+            bound = (e < far) if side == 'below' else (e > far)
+            segs = _allowed_segments(r, Ec if side == 'below' else Ev, e, side)
+            if not segs or not bound:
+                ax.plot([r[0], r[-1]], [e, e], ls=':', color=colour, lw=1.0, alpha=0.55,
+                        zorder=3)
+                label(r[-1], e, f" {tag}{j} unbound", colour, alpha=0.8)
+                continue
+            for a, b in segs:
+                ax.plot([a, b], [e, e], '-', color=colour, lw=2.0, alpha=0.9, zorder=5)
+            label(segs[-1][1], e, f" {tag}{j}", colour)
+
+    ax.set_xlabel(f"{cut} (nm)")
+    ax.set_ylabel('E (eV)')
+    ax.set_title(f"{env['shape']['label']}\n{env['dot']['name']} in {env['matrix']['name']} — "
+                 f"band edges and confined levels along [{'100' if cut=='x' else '001'}]",
+                 fontsize=9)
+    ax.legend(fontsize=7.5, loc='center left', frameon=False)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=8)
+    ax.figure.tight_layout()
+    return ax.figure
 
 
 def plot_maps(env, figsize=(13, 3.6)):

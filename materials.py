@@ -332,6 +332,23 @@ def alloy(system, x):
     return out
 
 
+def as_material(spec):
+    """Resolve any accepted material specification to a dict, without needing a separate `x`.
+
+        as_material('InAs')            as_material(('InAsSb', 0.3))            as_material(d)
+
+    The tuple form is what lets an ALLOY be used as a matrix, not just as a dot -- which is the
+    whole point of a metamorphic buffer, since alloying the matrix is how the misfit gets tuned.
+    Every function here that takes a `matrix` goes through this; passing a tuple to one that did
+    not used to raise `TypeError: tuple indices must be integers` from deep inside `alignment`.
+    """
+    if isinstance(spec, dict):
+        return spec
+    if isinstance(spec, (tuple, list)):
+        return material(*spec)
+    return material(spec)
+
+
 def material(spec, x=None):
     """One entry point for both binaries and alloys.
 
@@ -533,11 +550,11 @@ def alignment_table(system='InGaSb', compositions=(0.0, 0.2, 0.35, 0.5, 0.75, 1.
     `trace_strain` is a single representative Tr(eps) inside the dot -- pass the mean from a real
     solve to see where the edges actually land, or leave it None for the unstrained alignment.
     """
-    mat = MATERIALS[matrix]
+    mat = as_material(matrix)
     tr = 0.0 if trace_strain is None else trace_strain
-    xs = (None,) if system in MATERIALS else tuple(compositions)
+    xs = (None,) if isinstance(system, str) and system in MATERIALS else tuple(compositions)
 
-    print(f"energy zero = unstrained {matrix} valence edge; {matrix}: "
+    print(f"energy zero = unstrained {mat['name']} valence edge; {mat['name']}: "
           f"E_v = 0.000, E_c = {mat['Eg']:.3f} eV   (T = {TEMPERATURE:g} K)")
     print("unstrained alignment" if trace_strain is None else
           f"dot strained with Tr(eps) = {tr:+.4f} (matrix taken unstrained)")
@@ -549,8 +566,9 @@ def alignment_table(system='InGaSb', compositions=(0.0, 0.2, 0.35, 0.5, 0.75, 1.
         label = '  -  ' if x is None else f"{x:>5.2f}"
         print(f"{label} {d['name']:>14} {a['misfit'] * 100:>7.2f}% {d['Eg']:>7.3f} "
               f"{a['Ev_dot']:>8.3f} {a['Ec_dot']:>8.3f} {a['overlap']:>+19.3f}  {a['type']}")
-    print(f"\npositive last column = broken gap: the dot's valence edge lies above the {matrix}\n"
-          "conduction edge, so electrons stay in the matrix and holes in the dot.")
+    print(f"\npositive last column = broken gap: the dot's valence edge lies above the "
+          f"{mat['name']}\nconduction edge, so electrons stay in the matrix and holes in "
+          f"the dot.")
 
 
 #: Colour per alignment type. Validated for colour-vision deficiency with the `dataviz` skill's
@@ -591,13 +609,9 @@ def plot_alignment(dots, matrix='InAs', trace_strain=None, ax=None, figsize=(9.5
     """
     import matplotlib.pyplot as plt
 
-    mat = MATERIALS[matrix] if isinstance(matrix, str) else matrix
+    mat = as_material(matrix)
     tr = 0.0 if trace_strain is None else trace_strain
-
-    resolved = []
-    for spec in dots:
-        d = material(*spec) if isinstance(spec, (tuple, list)) else material(spec)
-        resolved.append((d, alignment(d, mat, tr)))
+    resolved = [(d, alignment(d, mat, tr)) for d in (as_material(s) for s in dots)]
 
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
