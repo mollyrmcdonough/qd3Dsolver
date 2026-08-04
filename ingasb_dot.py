@@ -71,6 +71,7 @@ benchmark and costs minutes rather than seconds.
 """
 import json
 import os
+import time
 
 import numpy as np
 
