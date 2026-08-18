@@ -408,6 +408,97 @@ def electron_mass(mat):
     return 1.0 / (1.0 + 2.0 * F + Ep * (Eg + 2.0 * D / 3.0) / (Eg * (Eg + D)))
 
 
+def electron_mass_from_gap(mat, Eg):
+    """`electron_mass` evaluated at an ARBITRARY gap instead of the material's own.
+
+    The Kane expression is a function of Eg, and strain moves Eg by hundreds of meV in these
+    islands -- for InSb in InAs, coherent strain opens the gap by ~409 meV in the conduction edge
+    alone. Yeap et al. state they take "the effect of the band-gap change on the electron
+    effective mass into account"; this is the primitive that allows it.
+
+    Kept separate from `electron_mass` rather than adding a parameter, because the two have
+    different provenance: `electron_mass(mat)` reproduces the workbook's tabulated masses to the
+    digit at 0 K and is a *validated* quantity, while this is the same formula extrapolated to a
+    gap it was never fitted at. See `electron_mass_field` for why the recommended way to use it
+    is differentially.
+    """
+    D, Ep, F = mat['delta_so'], mat['Ep'], mat['F']
+    return 1.0 / (1.0 + 2.0 * F + Ep * (Eg + 2.0 * D / 3.0) / (Eg * (Eg + D)))
+
+
+def electron_mass_field(inside_mask, dot, matrix, trace_strain, mode='differential'):
+    """Position-dependent electron mass, optionally including the strain-induced gap change.
+
+    `trace_strain` is Tr(eps), broadcast against `inside_mask`. The Gamma conduction band responds
+    only to the hydrostatic component (Rybchenko Eq. 7), so the local gap used here is
+    Eg + a_gap * Tr(eps) and the shear is deliberately not involved. delta_so is left unstrained,
+    following the same source.
+
+    Modes, all three worth reporting because their spread is the honest uncertainty:
+
+    'unstrained'
+        `electron_mass(mat)` at the material's own gap. The behaviour before this function
+        existed, and the baseline.
+
+    'absolute'
+        Kane evaluated at the local strained gap. Simple, and WRONG in a specific way at high
+        temperature: F and Ep are 0 K fits, so the absolute expression is already 24% out on InSb
+        at 300 K gaps before any strain is applied. Use it to see the size of the effect, not to
+        produce a number.
+
+    'differential' (default)
+        1/m = 1/m_table + [1/m_Kane(Eg_strained) - 1/m_Kane(Eg_unstrained)]
+
+        Adds only the strain-induced CHANGE to the tabulated band-edge mass, so the validated
+        value is preserved at zero strain and the 0 K fit of F and Ep never has to be trusted at
+        a temperature-shrunk gap. This is what "the band-gap change taken into account" should
+        mean, and it also sidesteps the 9-16% alloy inconsistency documented in `electron_mass`,
+        because that offset cancels in the difference.
+    """
+    if mode not in ('unstrained', 'absolute', 'differential'):
+        raise ValueError(f"mode must be 'unstrained', 'absolute' or 'differential', got {mode!r}")
+    inside_mask = np.asarray(inside_mask)
+    tr = np.broadcast_to(np.asarray(trace_strain, dtype=float), inside_mask.shape)
+
+    def per_material(mat, where):
+        """`where` is the region this material actually occupies.
+
+        The validity check must be restricted to it. Evaluating the DOT's deformation potential
+        over the whole grid means applying it to the tensile matrix strain, where
+        Eg + a_gap*Tr legitimately goes negative (InSb needs only Tr > +0.031 for that) -- those
+        values are discarded by the `np.where` below, but a guard that looks at them raises on a
+        perfectly healthy calculation.
+        """
+        if mode == 'unstrained':
+            return np.full(inside_mask.shape, electron_mass(mat))
+        Eg_local = mat['Eg'] + a_gap(mat) * tr
+        if np.any(Eg_local[where] <= 0.0):
+            raise ValueError("strained gap went non-positive inside the region this material "
+                             "occupies; the deformation potential is being extrapolated far "
+                             "outside its range")
+        # Outside `where` the values are unused; floor them so the arithmetic stays finite.
+        Eg_local = np.where(where, Eg_local, np.maximum(Eg_local, 1e-3))
+        m_abs = electron_mass_from_gap(mat, Eg_local)
+        if mode == 'absolute':
+            return m_abs
+        # Baseline is the TABULATED mass, not `electron_mass(mat)`: the latter IS Kane at the
+        # material's own gap, so using it makes the correction cancel identically and
+        # 'differential' silently becomes 'absolute' (caught exactly that way -- both modes
+        # returned 0.04431 for InSb).
+        #
+        # The correction is applied MULTIPLICATIVELY, not as a difference of reciprocals. The
+        # additive form 1/m = 1/m0 + 1/m_abs - 1/m_Kane(Eg) is the one usually written down, and
+        # it is unstable precisely where this mode is needed: at 300 K those three terms are
+        # 74.07 + 23.83 - 97.85 for InSb, cancelling to 0.05 and returning m = 20.1 m0. Scaling
+        # the tabulated mass by the factor Kane says the mass changes by is well conditioned for
+        # any gap, and satisfies the same zero-strain identity (the ratio is 1, so m = m0).
+        m0 = mat.get('m_e') or electron_mass(mat)
+        return m0 * (m_abs / electron_mass_from_gap(mat, mat['Eg']))
+
+    return np.where(inside_mask, per_material(dot, inside_mask),
+                    per_material(matrix, ~inside_mask))
+
+
 def a_gap(mat):
     """Hydrostatic deformation potential of the GAP, a_c + a_v, in eV.
 

@@ -82,7 +82,8 @@ PP_OFFSET = -0.590
 PP_TABLE_III = dict(cb=0.800, vb=0.127)
 
 RADII = (4.0, 6.0, 8.0, 10.0, 12.0, 16.0)
-ASPECT = 0.25                    # h/d, as in their Fig. 1(a)
+ASPECT = 0.25                    # AR = d/h = 4, as in their Fig. 1(a). ASPECT is the reciprocal:
+                                 # it multiplies the diameter to give the height.
 
 FIXED_H, FIXED_PAD = 0.5, 6.0    # the naive setup -- deliberately left as-is, it is the exhibit
 SCALED_CELLS = 20                # cells across the island radius -> h = R / 20
@@ -166,7 +167,7 @@ if __name__ == '__main__':
     cap = lambda R: ig.spherical_lens(R, 2 * R * ASPECT)
     ell = lambda R: ig.lens(R, 2 * R * ASPECT)
 
-    print(f"dot = InSb, matrix = InAs, h/d = {ASPECT}")
+    print(f"dot = InSb, matrix = InAs, AR = d/h = {1/ASPECT:g}")
     print(f"energy zero = unstrained InAs valence edge; P&P scale = ours {PP_OFFSET:+.3f} eV")
     print(f"gaps in force: {ms.GAP_SOURCE}  ->  " +
           ", ".join(f"{k} {v['Eg']:.3f}" for k, v in ms.SB_MATERIALS.items()))

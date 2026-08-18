@@ -5,7 +5,6 @@ __pycache__/
 
 # Scratch output from interactive runs. Figures that are deliverables are committed
 # explicitly; anything matching these was a throwaway.
-_*.png
 *.tmp
 *.log
 # Resume cache written by pryor_fig4.py's standalone sweep. The notebook recomputes

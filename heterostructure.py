@@ -72,6 +72,7 @@ partner as an exciton, which is exactly what happens in the broken-gap antimonid
 import time
 
 import numpy as np
+import scipy.sparse.linalg as spla
 
 import qdsolver_core as qd
 import elasticity_fd as ef
@@ -99,20 +100,50 @@ def lens(radius, height):
     )
 
 
+def ellipsoid(base, height):
+    """Oblate ellipsoid of base DIAMETER `base` and total height `height`.
+
+    The dot geometry of Yeap et al., Phys. Rev. B 79, 075305 (2009), Fig. 1 -- a full ellipsoid,
+    not the half-ellipsoid `lens` returns.
+
+    **AR = d/h**, diameter over height, so AR = 2 means an island twice as wide as tall and a
+    LARGER AR is a FLATTER island. This is the literature convention (Yeap, Rybchenko) and, since
+    2026-08-05, this package's convention everywhere. Earlier work here quoted h/d -- the
+    reciprocal -- so a stored record or a plot axis predating that change reads backwards. Sweeps
+    written before it carry `aspect` (h/d); everything since carries `AR`.
+
+    Arguments are the base diameter and total height rather than semi-axes, to match how the
+    paper (and experiment) quote island dimensions.
+    """
+    rx = base / 2.0
+    rz = height / 2.0
+    return dict(
+        kind='ellipsoid',
+        label=f"ellipsoid base = {base:g} nm, h = {height:g} nm (AR = {base/height:.3g})",
+        extent=(base, base, height),
+        volume=4.0 / 3.0 * np.pi * rx * rx * rz,
+        mask=lambda X, Y, Z: qd.ellipsoid_mask(X, Y, Z, rx, rx, rz),
+        params=dict(base=base, height=height, aspect_ratio=base / height),
+        scale=base,
+    )
+
+
 def spherical_lens(radius, height):
     """Lens cut from a sphere, the dot geometry of Pryor & Pistol Fig. 1(a).
 
     Use this, not `lens`, when comparing against their tables: `lens` is a half-ellipsoid, which
-    stands vertically at its rim and encloses 23% more volume at h/d = 1/4. See
-    `qdsolver_core.spherical_cap_mask`.
+    stands vertically at its rim and encloses 23% more volume at AR = 4 (h = d/4, the aspect ratio
+    Pryor & Pistol quote as h/d = 1/4). See `qdsolver_core.spherical_cap_mask`.
+
+    AR is reported as d/h throughout this package -- see `ellipsoid` for the convention note.
     """
     return dict(
         kind='spherical_lens',
-        label=f"spherical lens r = {radius:g} nm, h = {height:g} nm (h/d = {height/(2*radius):.3g})",
+        label=f"spherical lens r = {radius:g} nm, h = {height:g} nm (AR = {2*radius/height:.3g})",
         extent=(2 * radius, 2 * radius, height),
         volume=qd.spherical_cap_volume(radius, height),
         mask=lambda X, Y, Z: qd.spherical_cap_mask(X, Y, Z, radius, height),
-        params=dict(radius=radius, height=height),
+        params=dict(radius=radius, height=height, aspect_ratio=2.0 * radius / height),
         scale=2.0 * radius,
     )
 
@@ -593,8 +624,12 @@ def confinement(env, depths=(0.0, 0.01, 0.025, 0.05, 0.10), verbose=True):
 # States
 # --------------------------------------------------------------------------------------
 
-def electron_states(env, k=4, verbose=True):
+def electron_states(env, k=4, verbose=True, mass_mode='differential'):
     """Single-band conduction states. Bound iff E < `env['Ec_far']` = Eg(matrix).
+
+    `mass_mode` is passed to `materials.electron_mass_field`: 'unstrained' (the behaviour before
+    this argument existed), 'absolute', or 'differential' (default -- the tabulated band-edge mass
+    scaled by the Kane response to the local strained gap).
 
     The potential is the strained conduction edge including the piezoelectric term; the mass is
     the Kane-derived band-edge mass of each material (`materials.electron_mass`). Energies are on
@@ -606,7 +641,13 @@ def electron_states(env, k=4, verbose=True):
     state is the one you meant to find.
     """
     m = env['mask']
-    m_e = np.where(m, mt.electron_mass(env['dot']), mt.electron_mass(env['matrix']))
+    # `mass_mode` folds the strain-induced band-gap change into the electron mass, which Yeap et
+    # al. state they include. It is not a small correction to the MASS -- coherent strain opens
+    # the InSb gap fourfold and triples m_e -- but the electron here lives in the matrix, where
+    # the strain is far weaker, so its effect on the LEVEL is much smaller. Report the spread
+    # across modes rather than trusting one; see `materials.electron_mass_field`.
+    m_e = mt.electron_mass_field(m, env['dot'], env['matrix'], env['strain'].trace,
+                                 mode=mass_mode)
     E, V = qd.solve_states(m_e, env['Ec'], env['h'], n_states=k)
 
     inside = []
@@ -623,6 +664,120 @@ def electron_states(env, k=4, verbose=True):
             print(f"    {j}: E = {e:.4f} eV, binding {(env['Ec_far']-e)*1e3:+7.1f} meV, "
                   f"{f*100:5.1f}% inside the dot   {tag}")
     return dict(E=E, V=V, inside=inside, n_bound=int((E < env['Ec_far']).sum()))
+
+
+def embed_electron_fields(env, L, mass_mode='differential'):
+    """Conduction edge and electron mass on a box of side >= `L` nm, padded with FAR-FIELD values.
+
+    The inverse of `kp_planewave.crop_env`, and it exists for the opposite reason. The hole is
+    bound by hundreds of meV and decays within a nanometre, so it wants a SMALL box. The electron
+    in a broken-gap system is a weakly bound MATRIX state in the shallow tensile shell outside the
+    island; at ~17 meV binding its decay length sqrt(G0/(m E)) is 9.3 nm at m = 0.026, so it wants
+    a box of several times that. Solving both on one grid is impossible: fine enough for the dot
+    and large enough for the electron is millions of points.
+
+    Padding with constants rather than resampling is exact here, and that is the point. The strain
+    of an inclusion decays as 1/r^3, so ten nanometres out from a 2.5 nm island the fields ARE
+    their far-field values -- Ec_far and the unstrained matrix mass. The grid spacing never
+    changes, so nothing is interpolated and the inner region is bit-identical to `env`.
+
+    The caller is responsible for `env` itself being padded far enough that this is true;
+    `verbose` on `build` reports the strain at the box faces.
+    """
+    h = env['h']
+    n_want = int(np.ceil(L / h))
+    m_e = mt.electron_mass_field(env['mask'], env['dot'], env['matrix'], env['strain'].trace,
+                                 mode=mass_mode)
+    # The far field is unstrained matrix, so evaluate the same expression there rather than
+    # assuming which branch of `mass_mode` collapses to the tabulated value.
+    m_far = float(mt.electron_mass_field(np.zeros((1, 1, 1), bool), env['dot'], env['matrix'],
+                                         0.0, mode=mass_mode).ravel()[0])
+
+    pads, shape = [], []
+    for n in env['mask'].shape:
+        extra = max(n_want - n, 0)
+        lo = extra // 2
+        pads.append((lo, extra - lo))
+        shape.append(n + extra)
+    Ec = np.pad(env['Ec'], pads, constant_values=env['Ec_far'])
+    me = np.pad(m_e, pads, constant_values=m_far)
+    mask = np.pad(env['mask'], pads, constant_values=False)
+    return dict(Ec=Ec, m_e=me, mask=mask, h=h, m_far=m_far, pads=pads,
+                L=[s * h for s in shape], Ec_far=float(env['Ec_far']))
+
+
+def electron_states_bigbox(env, L, k=2, mass_mode='differential', tol=1e-7, maxiter=600,
+                           verbose=True):
+    """Lowest conduction states on a box of side >= `L` nm. Matrix-free; LOBPCG, not shift-invert.
+
+    `heterostructure.electron_states` factorizes the Hamiltonian with a sparse LU, which is the
+    right choice up to a few hundred thousand points and impossible past it -- 3D LU fill-in. The
+    boxes this needs are 1-2 million points, so the solve is iterative.
+
+    The preconditioner is what makes that cheap, and it is close to exact here: outside a few
+    nanometres of the island the operator IS the constant-coefficient Laplacian at the matrix
+    mass, and `build_hamiltonian` uses hard-wall (Dirichlet) boundaries, which the type-I discrete
+    sine transform diagonalizes EXACTLY. So the preconditioner inverts the far-field operator in
+    one DST pair and only the small strained region is left for the iteration to deal with.
+
+    WHY THE BOX IS THE WHOLE PROBLEM. A hard-walled box adds 3*G0*pi^2/(m L^2) of pure
+    quantisation energy, which at m = 0.026 is 645 meV at L = 8.1 nm -- measured, and it is why
+    this state was previously reported as unbound. It falls as 1/L^2: 4.0 meV at L = 65 nm. Since
+    the binding being measured is ~17 meV, the box must be run out and the trend shown, never
+    assumed. `scripts/electron_binding.py` does that.
+    """
+    from scipy.fft import dstn, idstn
+
+    f = embed_electron_fields(env, L, mass_mode=mass_mode)
+    Ec, me, h = f['Ec'], f['m_e'], f['h']
+    H = qd.build_hamiltonian(me, Ec, h)
+    n = H.shape[0]
+    sigma = float(Ec.min()) - 1e-3
+
+    # Exact symbol of the Dirichlet second difference at the FAR-FIELD mass: the DST-I basis
+    # function j has eigenvalue 2t(1 - cos(pi (j+1)/(N+1))) along each axis.
+    t_far = qd.HBAR2_OVER_2M0 / (f['m_far'] * h ** 2)
+    lam = np.zeros(Ec.shape)
+    for ax, N in enumerate(Ec.shape):
+        j = np.arange(1, N + 1)
+        w = 2.0 * t_far * (1.0 - np.cos(np.pi * j / (N + 1)))
+        lam = lam + w.reshape([-1 if a == ax else 1 for a in range(3)])
+    denom = lam + f['Ec_far'] - sigma
+
+    def precond(x):
+        out = np.empty_like(x)
+        for c in range(x.shape[1]):
+            v = x[:, c].reshape(Ec.shape)
+            out[:, c] = idstn(dstn(v, type=1, norm='ortho') / denom,
+                              type=1, norm='ortho').ravel()
+        return out
+
+    M = spla.LinearOperator((n, n), matvec=lambda v: precond(v.reshape(-1, 1)).ravel(),
+                            matmat=precond, dtype=float)
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((n, k))
+    E, V = spla.lobpcg(H, X, M=M, largest=False, tol=tol, maxiter=maxiter)
+    order = np.argsort(E)
+    E, V = E[order], V[:, order]
+
+    inside, ring = [], []
+    for j in range(V.shape[1]):
+        rho = (V[:, j] ** 2).reshape(Ec.shape)
+        rho = rho / rho.sum()
+        inside.append(float(rho[f['mask']].sum()))
+        ring.append(float(rho[(~f['mask']) & (Ec < f['Ec_far'] - 1e-4)].sum()))
+    box_quantum = 3.0 * qd.HBAR2_OVER_2M0 * np.pi ** 2 / (f['m_far'] * min(f['L']) ** 2)
+
+    if verbose:
+        print(f"  box {f['L'][0]:.1f} x {f['L'][1]:.1f} x {f['L'][2]:.1f} nm = {n:,} pts, "
+              f"empty-box quantum {box_quantum*1e3:.1f} meV")
+        for j, (e, i, r) in enumerate(zip(E, inside, ring)):
+            print(f"    {j}: E = {e:.4f} eV, binding {(f['Ec_far']-e)*1e3:+7.1f} meV, "
+                  f"{i*100:4.1f}% in dot, {r*100:5.1f}% in the tensile shell, "
+                  f"{'bound' if e < f['Ec_far'] else 'UNBOUND (box state)'}")
+    return dict(E=E, V=V, inside=np.array(inside), in_shell=np.array(ring),
+                n_pts=n, L=f['L'], box_quantum=float(box_quantum),
+                Ec_far=f['Ec_far'], binding=float((f['Ec_far'] - E[0]) * 1e3))
 
 
 def hole_well(env):
@@ -642,8 +797,166 @@ def hole_well(env):
                 broken_gap=v_in - env['Ec_far'])
 
 
+def six_band_holes(env, k=8, tol=1e-8, maxiter=20000, verbose=True):
+    """Hole states from the SIX-band (valence-only) Hamiltonian. Seconds, and use this one.
+
+    Prefer this to `eight_band_states(band='vb')` for holes here. Two reasons, one of them a
+    correctness reason.
+
+    **Spurious solutions.** The eight-band Hamiltonian couples conduction and valence, and on a
+    finite-difference grid that coupling produces extra wrong-curvature branches at large k which
+    appear as grid-scale-oscillatory states inside the gap. Measured on the InAs/GaAs control
+    (spherical lens r = 10 nm, h = 1 nm): an eight-band solve seeded at the exact island valence
+    top converged to a 7.4e-08 eV residual and returned twelve states in perfect Kramers pairs,
+    14-52 meV below the edge, each with **0.6-0.8%** of its density in the island -- against a
+    random-vector baseline of 8.2%. Those states sit between the matrix valence top (0.2351 eV)
+    and the island valence top (0.3245 eV), i.e. classically forbidden in the matrix, yet 99%
+    of their weight is there. No physical bound state does that. The same geometry solved
+    six-band returns the ladder at 80-97% localization in seven seconds.
+
+    So the eight-band failure was NOT sigma placement (the valence maximum is inside the island
+    by 89-567 meV in every system here), not the block size, and not convergence. Suppressing
+    spurious modes properly -- rescaling Ep so the extra branches leave the Brillouin zone -- is
+    the fix if eight-band is needed; until then this is the trustworthy route.
+
+    **Speed.** With no conduction band the hole ground state is the LARGEST eigenvalue, so it is
+    extremal: plain Lanczos finds it with no folded spectrum and no sigma at all. That removes
+    the entire sigma-scanning apparatus `ingasb_dot.hole_ladder` exists to work around, and with
+    it the squared-gap conditioning penalty of the folded operator.
+
+    The cost is the conduction-valence coupling itself, which is a real approximation in a
+    narrow-gap material: it pushes valence states down, so this UNDERESTIMATES hole confinement,
+    mildly in InGaSb (Eg = 0.42 eV) and more in InSb (Eg = 0.235 eV). Confinement energies from
+    here are therefore conservative, and so is any critical size derived from them.
+
+    Returns energies descending (most weakly confined first, i.e. the hole ground state at
+    index 0) with the localization fraction that decides whether each is an island state.
+    """
+    import scipy.sparse.linalg as spla
+    m, h = env['mask'], env['h']
+    n = m.size
+    ops = kpc.GridOperators(m.shape, h, periodic=False)
+    fields = kp.material_fields(m, mt.kp_params(env['dot']), mt.kp_params(env['matrix']),
+                                env['Ev'], env['Ec'], n_bands=6)
+    H = kp.confined_hamiltonian(ops, fields, n_bands=6, strain=env['strain'])
+    nb = H.shape[0] // n
+    top = valence_edge_top(env)
+
+    t0 = time.time()
+    # 'LA' = largest algebraic. In the electron convention the valence states are at the top,
+    # so the hole ground state is near the maximum -- no interior targeting needed. But the
+    # maximum is NOT automatically a hole state; see below. Solve for a margin of extra states
+    # so there is something left after the unphysical ones are discarded.
+    n_solve = min(max(2 * k, k + 8), H.shape[0] - 2)
+    E, V = spla.eigsh(H, k=n_solve, which='LA', tol=tol, maxiter=maxiter)
+    order = np.argsort(-E)
+    E, V = E[order], V[:, order]
+    inside = np.array([float((np.abs(V[:, j].reshape(nb, n)) ** 2).sum(axis=0)
+                             .reshape(m.shape)[m].sum()
+                             / (np.abs(V[:, j]) ** 2).sum()) for j in range(V.shape[1])])
+
+    # Discard eigenvalues ABOVE the island's own valence band edge.
+    #
+    # A hole bound in the island must lie below the top of the well that binds it, so E > `top`
+    # is not a bound state, whatever its residual says. This is not hypothetical: at fine grids
+    # the solve returns interface-pinned modes whose energy DIVERGES as ~1/h^2 (measured on a
+    # 2.5 nm island: +0.117 eV at h = 0.50 nm rising to +1.566 eV at h = 0.156), and taking
+    # `which='LA'` at face value returns those instead of the ladder.
+    #
+    # Localization does NOT separate them -- they sit on the dot boundary and come out 55-60%
+    # "inside", indistinguishable from a real state by that test alone. The band edge does
+    # separate them, because they are above it and no bound state can be.
+    #
+    # THIS IS A FILTER, NOT A FIX, and it is weaker than it looks. Those modes are not a
+    # discretisation defect: the symmetrized six-band operator has no maximum at an abrupt
+    # interface, because its kinetic tensor is Legendre-Hadamard elliptic but not strongly
+    # elliptic (`kp_planewave.strong_ellipticity`). They are genuine eigenvalues of the operator
+    # being solved, a plane-wave basis with no stencil at all produces them too, and removing the
+    # ones above the edge does not un-contaminate what lies below -- they hybridize with the
+    # ladder rather than sitting cleanly on top of it.
+    #
+    # `spurious` counts what was thrown away. A nonzero count means the runaway has reached the
+    # band edge on this grid, so the level below it is not to be quoted.
+    keep = E <= top + 1e-6
+    n_spurious = int((~keep).sum())
+    E, V, inside = E[keep][:k], V[:, keep][:, :k], inside[keep][:k]
+
+    if verbose:
+        print(f"  six-band vb: {H.shape[0]:,} unknowns, {time.time()-t0:.0f}s, "
+              f"island valence top = {top:.4f} eV")
+        if n_spurious:
+            print(f"    discarded {n_spurious} eigenvalue(s) above the band edge "
+                  f"(interface artifacts); check convergence in h")
+        for j, (e, f) in enumerate(zip(E, inside)):
+            print(f"    h{j}: E = {e:+.4f} eV, confinement {(top-e)*1e3:6.1f} meV, "
+                  f"{f*100:5.1f}% inside the dot")
+    return dict(E=E, V=V, inside=inside, loc=inside, top=top, n_bands=nb,
+                n_spurious=n_spurious, seconds=time.time() - t0)
+
+
+def valence_edge_top(env, reduce='max', erode=0, report=False):
+    """The k = 0 top of the local valence band INSIDE the island -- `kp_pryor.hole_sigma`.
+
+    Confinement energies are quoted downward from this, so it is the reference every hole number
+    in this package depends on. `inside_mask` is not optional: without it this returns the value
+    over the whole box, which in a strained system can sit in the matrix.
+
+    **`reduce='max'` is h-DEPENDENT and biased high. Use `reduce='mean'` for an ellipsoid.**
+
+    Eshelby's theorem makes the strain inside an ellipsoidal inclusion homogeneous, so this
+    quantity is provably independent of h there -- and with `max` it is not. Measured on a 20 nm
+    ellipsoid at AR 2 (InSb in InAs, 20 cells across the height), varying only how much of the
+    boundary layer is excluded:
+
+        erode    n_int     v1 std      max      mean    max - mean
+            0    16840    16.20 m   0.7707    0.6498     120.96 m
+            1    13936     4.62 m   0.6746    0.6470      27.60 m
+            2    11296     1.99 m   0.6575    0.6467      10.88 m
+            3     8912     1.13 m   0.6521    0.6466       5.54 m
+
+    The **mean moves 3.2 meV** across that range while the **max moves 119 meV**. The problem is
+    the estimator, not the boundary layer: a maximum tracks the upper tail of whatever scatter the
+    staircased mask leaves, so refining the grid makes it drift rather than converge and a
+    convergence study in h does not reveal it. The mean is the estimator of a constant, and is
+    already within 3 meV on the raw mask.
+
+    `reduce` is left at `'max'` by default because for a NON-ellipsoidal island (lens, dash) the
+    interior is genuinely inhomogeneous and the maximum is the physically meaningful top of the
+    well -- and because it is what `six_band_holes` uses as its filter threshold, where an
+    over-tight bound would discard real states. Pass `'mean'` when the shape guarantees
+    homogeneity and you want the h-independent number.
+
+    `report` returns diagnostics instead of the bare value, including the interior standard
+    deviation -- which by the same theorem must be ~0 for an ellipsoid, making it a free check on
+    the strain solve, the padding and the mask.
+    """
+    if reduce not in ('max', 'mean'):
+        raise ValueError(f"reduce must be 'max' or 'mean', got {reduce!r}")
+    m = env['mask']
+    sel = m
+    if erode:
+        from scipy.ndimage import binary_erosion
+        eroded = binary_erosion(m, iterations=int(erode))
+        if eroded.any():
+            sel = eroded
+    pick = lambda key: np.where(m, env['dot'][key], env['matrix'][key])
+    edges = kp.local_band_edges(env['strain'], env['Ev'], np.zeros_like(env['Ev']),
+                                pick('delta_so'), 0.0, 0.0, pick('b'), pick('d'),
+                                hydrostatic_applied=True)
+    v1 = edges['v1']
+    top = float(v1[sel].max() if reduce == 'max' else v1[sel].mean())
+    if not report:
+        return top
+    return dict(top=top, top_max=float(v1[sel].max()), top_mean=float(v1[sel].mean()),
+                top_raw_max=float(v1[m].max()), interior_std=float(v1[sel].std()),
+                n_interior=int(sel.sum()), n_mask=int(m.sum()), reduce=reduce)
+
+
 def eight_band_states(env, band='vb', k=4, tol=1e-7, maxiter=8000, verbose=True):
     """OPT-IN, minutes not seconds: eight-band states, the same machinery as the Pryor benchmark.
+
+    For HOLES prefer `six_band_holes`: this routine is subject to spurious in-gap solutions that
+    are converged, Kramers-paired, and wrong. See that function's docstring for the measurement.
 
     Needed for the hole, which a single band cannot describe in a narrow-gap strained alloy.
 
@@ -741,7 +1054,7 @@ def _allowed_segments(r, profile, E, side):
 
 
 def plot_levels(env, electron=None, hole=None, cut='x', ax=None, figsize=(8.0, 5.2),
-                max_levels=6):
+                max_levels=6, palette=None, legend_levels=None):
     """Band edges along one principal cut, with computed level energies drawn where each state
     is classically allowed.
 
@@ -756,8 +1069,13 @@ def plot_levels(env, electron=None, hole=None, cut='x', ax=None, figsize=(8.0, 5
     or below it) is drawn dashed and spans the whole box, because that is exactly what it does --
     it is a box state, not a confined one.
 
-    Level lines take the colour of the band they belong to rather than a new hue per level: the
-    identity that matters is electron-vs-hole, and the index is a direct label.
+    By default level lines take the colour of the band they belong to rather than a new hue per
+    level: the identity that matters is electron-vs-hole, and the index is a direct label. That
+    default is right when the question is "is this state in the dot"; it is wrong when the
+    question is "which level is which", because near-degenerate levels overlap and one colour
+    makes the ladder read as a smear. Pass `palette` for the latter -- a colormap name or an
+    explicit list of colours -- and each level gets its own hue plus a legend entry carrying its
+    energy. `legend_levels` caps how many appear in the legend (default: all drawn ones).
     """
     import matplotlib.pyplot as plt
     p = band_profiles(env)[cut]
@@ -767,8 +1085,10 @@ def plot_levels(env, electron=None, hole=None, cut='x', ax=None, figsize=(8.0, 5
         _, ax = plt.subplots(figsize=figsize)
     ax.plot(r, Ec, '-', color='k', lw=1.6, label='$E_c$', zorder=4)
     ax.plot(r, Ev, '-', color='#b03030', lw=1.6, label='$E_v$ (top)', zorder=4)
-    ax.axhline(env['Ec_far'], color='0.55', ls='--', lw=0.9, zorder=1)
-    ax.axhline(env['Ev_far'], color='0.55', ls=':', lw=0.9, zorder=1)
+    ax.axhline(env['Ec_far'], color='0.55', ls='--', lw=0.9, zorder=1,
+               label='$E_c$ matrix (far)')
+    ax.axhline(env['Ev_far'], color='0.55', ls=':', lw=0.9, zorder=1,
+               label='$E_v$ matrix (far)')
 
     # Shade the island so "inside" is visible without a second axis.
     inside = p['inside']
@@ -789,30 +1109,53 @@ def plot_levels(env, electron=None, hole=None, cut='x', ax=None, figsize=(8.0, 5
         ax.text(x + step * 0.05 * float(r[-1] - r[0]), y, text, va='center', fontsize=7,
                 color=colour, alpha=alpha)
 
+    def hues(n, band_colour):
+        """One colour per level from `palette`, or the band colour repeated (the default)."""
+        if palette is None:
+            return [band_colour] * n
+        if isinstance(palette, str):
+            cm = plt.get_cmap(palette)
+            return [cm(0.12 + 0.76 * (j / max(n - 1, 1))) for j in range(n)]
+        return [palette[j % len(palette)] for j in range(n)]
+
     for states, colour, side, far, tag in (
             (electron, 'k', 'below', env['Ec_far'], 'e'),
             (hole, '#b03030', 'above', env['Ev_far'], 'h')):
         if states is None:
             continue
         E = np.atleast_1d(np.asarray(states['E'] if isinstance(states, dict) else states)).real
-        for j, e in enumerate(E[:max_levels]):
+        E = E[:max_levels]
+        cols = hues(len(E), colour)
+        n_leg = len(E) if legend_levels is None else legend_levels
+        for j, e in enumerate(E):
+            col = cols[j]
             bound = (e < far) if side == 'below' else (e > far)
             segs = _allowed_segments(r, Ec if side == 'below' else Ev, e, side)
+            # The legend entry carries the energy, so the reader never has to match a hue
+            # against an axis by eye -- that is the whole point of colouring per level.
+            leg = (f"{tag}{j} = {e:.4f} eV" + ("" if bound else "  (unbound)")
+                   if j < n_leg else None)
             if not segs or not bound:
-                ax.plot([r[0], r[-1]], [e, e], ls=':', color=colour, lw=1.0, alpha=0.55,
-                        zorder=3)
-                label(r[-1], e, f" {tag}{j} unbound", colour, alpha=0.8)
+                ax.plot([r[0], r[-1]], [e, e], ls=':', color=col, lw=1.2, alpha=0.75,
+                        zorder=3, label=leg)
+                label(r[-1], e, f" {tag}{j} unbound", col, alpha=0.8)
                 continue
-            for a, b in segs:
-                ax.plot([a, b], [e, e], '-', color=colour, lw=2.0, alpha=0.9, zorder=5)
-            label(segs[-1][1], e, f" {tag}{j}", colour)
+            for i, (a, b) in enumerate(segs):
+                ax.plot([a, b], [e, e], '-', color=col, lw=2.2, alpha=0.95, zorder=5,
+                        label=leg if i == 0 else None)
+            label(segs[-1][1], e, f" {tag}{j}", col)
 
     ax.set_xlabel(f"{cut} (nm)")
     ax.set_ylabel('E (eV)')
     ax.set_title(f"{env['shape']['label']}\n{env['dot']['name']} in {env['matrix']['name']} — "
                  f"band edges and confined levels along [{'100' if cut=='x' else '001'}]",
                  fontsize=9)
-    ax.legend(fontsize=7.5, loc='center left', frameon=False)
+    # A per-level legend runs long, so it moves outside the axes rather than covering the bands.
+    if palette is None:
+        ax.legend(fontsize=7.5, loc='center left', frameon=False)
+    else:
+        ax.legend(fontsize=7.0, loc='upper left', bbox_to_anchor=(1.01, 1.0),
+                  frameon=False, borderaxespad=0.0)
     ax.spines[['top', 'right']].set_visible(False)
     ax.tick_params(labelsize=8)
     ax.figure.tight_layout()

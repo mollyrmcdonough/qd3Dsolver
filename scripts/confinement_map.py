@@ -64,7 +64,8 @@ import numpy as np
 import materials as mt
 import heterostructure as hs
 
-RADIUS, ASPECT = 10.0, 0.25        # spherical cap, h/d = 1/4, Pryor & Pistol's dot geometry
+RADIUS, ASPECT = 10.0, 0.25        # spherical cap at AR = d/h = 4; ASPECT is its reciprocal,
+                                   # h/d, because it multiplies the diameter to give the height
 
 #: (dot spec, matrix). The four binaries and both alloys this project carries, in the
 #: combinations that are lattice-plausible. Ordered matrix-by-matrix so the table reads as a
@@ -116,7 +117,7 @@ def one(dot, matrix, cells, pad_frac=2.0):
 def table(rows, cells):
     L = 2 * RADIUS
     print(f"\n{'='*118}")
-    print(f"spherical cap, d = {L:g} nm, h/d = {ASPECT}, {cells} cells across the radius, "
+    print(f"spherical cap, d = {L:g} nm, AR = d/h = {1/ASPECT:g}, {cells} cells across the radius, "
           f"pad = 2R.  Island is {L:g} nm across.")
     print(f"{'='*118}")
     print(f"{'dot':>15}{'in':>7}{'misfit':>9}{'alignment':>19}"

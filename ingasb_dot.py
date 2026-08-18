@@ -282,18 +282,11 @@ def kramers_levels(E, loc, split_tol=1e-4):
 HOLE_LOC_MIN = 0.35
 
 
-def valence_edge_top(env):
-    """The k = 0 top of the local valence band inside the island -- `kp_pryor.hole_sigma`.
-
-    In the Pryor benchmark this is the right sigma for a hole solve. Here it is NOT, and
-    `hole_ladder` explains why at length. Kept as a named quantity because it is still the
-    correct *band edge*, and the gap between it and the actual ladder top is the confinement
-    energy, which is worth reporting.
-    """
-    m = env['mask']
-    pick = lambda key: np.where(m, env['dot'][key], env['matrix'][key])
-    return float(kp.hole_sigma(env['Ev'], env['strain'], pick('b'), pick('d'),
-                               pick('delta_so'), inside_mask=m))
+#: Moved to `heterostructure` -- it is general machinery, and `six_band_holes` needs it there.
+#: In the Pryor benchmark this is the right sigma for a hole solve. Here it is NOT, and
+#: `hole_ladder` explains why at length. Still the correct *band edge*, and the gap between it
+#: and the ladder top is the confinement energy.
+valence_edge_top = hs.valence_edge_top
 
 
 def _degenerate_groups(E, tol=1e-5):
