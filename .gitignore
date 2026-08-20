@@ -10,3 +10,12 @@ __pycache__/
 # Resume cache written by pryor_fig4.py's standalone sweep. The notebook recomputes
 # (cache=None) and its stored outputs are the record, so this is pure scratch.
 fig4_levels.json
+
+# Cygwin/MSYS crash dumps. These have been committed twice now -- 1addcdb removed one and a
+# later `git add -A` put it straight back -- so ignore the pattern rather than the filename.
+*.stackdump
+
+# Migration backups written by scripts/migrate_aspect_to_AR.py. The converted file is the
+# record and scripts/convention_audit.py pins the mapping, so the .bak is a safety net for
+# the run that made it, not an artifact worth carrying.
+*.h_over_d.bak
